@@ -447,8 +447,9 @@ def cmd_scan(args, cfg):
         for rel, uasset in iter_asset_files(orig_root, target):
             jname = rel.replace("/", "__").replace(".uasset", ".json")
             jpath = os.path.join(json_dir, jname)
-            if not os.path.isfile(jpath):
-                to_json(cfg, uasset, jpath)
+            # JSON создаём заново при каждом запуске из свежего оригинала:
+            # файл от прошлого запуска содержал бы уже изменённые значения.
+            to_json(cfg, uasset, jpath)
             count_files += 1
             with open(jpath, encoding="utf-8") as f:
                 data = json.load(f)
@@ -563,8 +564,9 @@ def cmd_patch(args, cfg):
                 continue
             jname = rel.replace("/", "__").replace(".uasset", ".json")
             jpath = os.path.join(json_dir, jname)
-            if not os.path.isfile(jpath):
-                to_json(cfg, orig_uasset, jpath)
+            # JSON создаём заново при каждом запуске из свежего оригинала,
+            # иначе повторная установка применила бы множители второй раз.
+            to_json(cfg, orig_uasset, jpath)
             with open(jpath, encoding="utf-8") as f:
                 data = json.load(f)
 

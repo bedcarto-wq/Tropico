@@ -363,8 +363,13 @@ function Save-Config([hashtable]$cfg) {
 # ---------------------------------------------------------------------------
 function Test-GameRoot([string]$p) {
     if (-not $p) { return $false }
-    $d = Join-Sub $p 'Tropico6/Content/Paks'
-    return (Test-Path -LiteralPath $d -PathType Container)
+    # ВАЖНО: Join-Path бросает DriveNotFoundException для несуществующего диска
+    # (например 'D:\...' на машине без диска D), а [IO.Directory]::Exists просто
+    # вернёт False. Поэтому проверяем через .NET и гасим любые исключения.
+    try {
+        $d = Join-Sub $p 'Tropico6/Content/Paks'
+        return [System.IO.Directory]::Exists($d)
+    } catch { return $false }
 }
 
 function Find-GameRoot([hashtable]$cfg) {
@@ -379,6 +384,28 @@ function Find-GameRoot([hashtable]$cfg) {
     )
     foreach ($c in $candidates) { if (Test-GameRoot $c) { return $c } }
     if ($script:IsWin) {
+        # Перебор всех реально существующих дисков: типичные расположения
+        # Steam/Epic-библиотек. Безопасно: диск существует по определению.
+        try {
+            $subs = @(
+                'SteamLibrary\steamapps\common\Tropico 6',
+                'Steam\steamapps\common\Tropico 6',
+                'Program Files (x86)\Steam\steamapps\common\Tropico 6',
+                'Program Files\Steam\steamapps\common\Tropico 6',
+                'Program Files\Epic Games\Tropico 6',
+                'Program Files\Epic Games\Tropico6',
+                'Epic Games\Tropico 6',
+                'Epic Games\Tropico6',
+                'Games\Tropico 6',
+                'Games\Steam\steamapps\common\Tropico 6'
+            )
+            foreach ($drv in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+                foreach ($sub in $subs) {
+                    $g = Join-Path $drv.Root $sub
+                    if (Test-GameRoot $g) { return $g }
+                }
+            }
+        } catch { }
         # Steam libraryfolders.vdf — другие библиотеки на других дисках
         try {
             $pf86 = ${env:ProgramFiles(x86)}
@@ -794,9 +821,10 @@ function Invoke-Patch {
             if ($rules.Count -eq 0) { continue }
             $jname = ($rel -replace '/', '__') -replace '\.uasset$', '.json'
             $jpath = Join-Path $jsonDir $jname
-            if (-not (Test-Path -LiteralPath $jpath)) {
-                Invoke-ToJson ([string]$asset.Path) $jpath
-            }
+            # JSON создаём заново при каждом запуске из свежего оригинала:
+            # файл от прошлого запуска содержал бы уже изменённые значения,
+            # и повторная установка применила бы множители второй раз.
+            Invoke-ToJson ([string]$asset.Path) $jpath
             $data = ConvertFrom-JsonText (Read-Text $jpath)
 
             $changes = @()
@@ -983,7 +1011,9 @@ function Invoke-Scan {
         foreach ($asset in (Get-TargetAssets $origRoot ([string]$target))) {
             $jname = (([string]$asset.Rel -replace '/', '__') -replace '\.uasset$', '.json')
             $jpath = Join-Path $jsonDir $jname
-            if (-not (Test-Path -LiteralPath $jpath)) { Invoke-ToJson ([string]$asset.Path) $jpath }
+            # JSON создаём заново: отчёт должен показывать актуальные
+            # оригинальные значения игры, а не остатки прошлого запуска.
+            Invoke-ToJson ([string]$asset.Path) $jpath
             $countFiles++
             $data = ConvertFrom-JsonText (Read-Text $jpath)
             foreach ($pair in (Get-AllNodes (Get-JProp $data 'Exports'))) {
