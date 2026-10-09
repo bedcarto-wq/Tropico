@@ -237,7 +237,7 @@ function New-JsonNet {
         Add-Type -AssemblyName System.Web.Extensions | Out-Null
         $jss = New-Object System.Web.Script.Serialization.JavaScriptSerializer
         $jss.MaxJsonLength = 2147483647
-        $jss.MaxRecursionDepth = 512
+        $jss.RecursionLimit = 512
         return $jss
     }
     return $null
@@ -493,6 +493,11 @@ function Invoke-Tool([string]$exe, [string[]]$argList, [string]$what = '') {
 }
 
 function Download-FileEx([string]$url, [string]$dest) {
+    if (Test-WinPs) {
+        # В старых сборках Windows .NET Framework не включает TLS 1.2 по умолчанию,
+        # без него GitHub отдаёт ошибку соединения.
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
+    }
     $iw = @{ Uri = $url; OutFile = $dest; UserAgent = 'Mozilla/5.0'; TimeoutSec = 300 }
     if (Test-WinPs) { $iw.UseBasicParsing = $true }
     Invoke-WebRequest @iw
