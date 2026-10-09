@@ -259,30 +259,42 @@ def cmd_extract(args, cfg):
     os.makedirs(orig_dir, exist_ok=True)
 
     total = 0
+    # UnrealPak извлекает файлы с путём монтирования ../../../Tropico6/Content/...,
+    # то есть НАД папкой назначения. Поэтому dest делаем на три уровня внутри orig:
+    # при любом варианте поведения UnrealPak файлы окажутся внутри orig/ и будут найдены.
+    tmp_dir = os.path.join(orig_dir, "e1", "e2", "e3")
+    seen = set()
     for pattern in EXTRACT_FILTERS:
-        dest = os.path.join(orig_dir, "filter_" + pattern.strip("*"))
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        os.makedirs(tmp_dir, exist_ok=True)
         got = 0
         for pak in pak_files:
             name = os.path.basename(pak)
             if "_VO" in name or "vo_" in name.lower():
                 continue  # паки локализации/озвучки не нужны
-            out = subprocess.run(
-                [extract_exe, pak, "-Extract", dest, "-Filter=" + pattern],
+            subprocess.run(
+                [extract_exe, pak, "-Extract", tmp_dir, "-Filter=" + pattern],
                 capture_output=True, text=True, shell=False)
-            if out.returncode != 0:
-                warn("Извлечение %s из %s завершилось с кодом %d "
-                     "(часто это нормально: фильтр ничего не нашёл в этом паке)."
-                     % (pattern, name, out.returncode))
-        for root, _dirs, files in os.walk(dest):
+            # ненулевой код возврата нормален: фильтр мог ничего не найти в этом паке
+        content_root = os.path.join(orig_dir, "Tropico6", "Content")
+        for root, _dirs, files in os.walk(orig_dir):
             for f in files:
-                rel = content_subpath(os.path.join(root, f))
-                if rel:
-                    dst = os.path.join(orig_dir, "Tropico6", "Content", *rel.split("/"))
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    shutil.copy2(os.path.join(root, f), dst)
-                    got += 1
-        # временные фильтры удаляем, итог лежит в orig/Tropico6/Content/...
-        shutil.rmtree(dest, ignore_errors=True)
+                full = os.path.join(root, f)
+                rel = content_subpath(full)
+                if not rel:
+                    continue
+                if rel in seen:
+                    continue
+                seen.add(rel)
+                got += 1
+                dst = os.path.join(content_root, *rel.split("/"))
+                if os.path.normcase(os.path.normpath(full)) == \
+                        os.path.normcase(os.path.normpath(dst)):
+                    continue  # файл уже лежит на нужном месте
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(full, dst)
+        # временные каталоги удаляем, итог лежит в orig/Tropico6/Content/...
+        shutil.rmtree(os.path.join(orig_dir, "e1"), ignore_errors=True)
         msg("  фильтр %-22s -> %d файлов" % (pattern, got))
         total += got
 
