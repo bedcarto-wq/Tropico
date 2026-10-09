@@ -1,0 +1,184 @@
+{
+  "mod": {
+    "id": "HardballPolitics",
+    "title": "Hardball Politics — Политика без поблажек",
+    "version": "1.0.0",
+    "target_game": "Tropico 6 (актуальные сборки; заявленная цель — v.23 (1290))",
+    "language": "ru"
+  },
+  "notes": [
+    "Все правила применяются только к числовым значениям, имена которых реально существуют в ассетах игры.",
+    "Перед изменением проверяется, что исходное значение попадает в диапазон 'range' — защита от чужих версий/модов.",
+    "Каждое применение пишет полный журнал (work/reports/patch_log.json): ассет, путь, старое и новое значение."
+  ],
+  "patch_targets": [
+    "Blueprints/GameData/BP_T6SingletonData.uasset",
+    "Blueprints/Ultimatums/Factions/",
+    "Blueprints/Demands/Factions/"
+  ],
+  "scan_targets": [
+    "Blueprints/Escalations/",
+    "Blueprints/Politics/Factions/",
+    "Blueprints/Military/"
+  ],
+  "rules": [
+    {
+      "id": "speech_praise_support",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "^StandingModiferFleetingPraise$",
+      "action": "scale",
+      "value": 0.3,
+      "range": [1, 1000],
+      "desc": "Предвыборная речь: прямой бонус поддержки от восхваления фракции урезан до ~30% исходного (StandingModiferFleetingPraise)"
+    },
+    {
+      "id": "speech_struct_praise",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "(?i)(praise|flatter|cheer|applause|admiration)",
+      "context": "(?i)election.?speech",
+      "action": "scale",
+      "value": 0.3,
+      "if_value": ">0",
+      "range": [0.001, 1000],
+      "desc": "Предвыборная речь: прочие положительные бонусы «восхваления» внутри структуры ElectionSpeech — до ~30%"
+    },
+    {
+      "id": "speech_struct_promise",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "(?i)promise",
+      "exclude": "(?i)(needed|happiness|threshold|duration)",
+      "context": "(?i)election.?speech",
+      "action": "scale",
+      "value": 0.28,
+      "if_value": ">0",
+      "range": [0.001, 1000],
+      "desc": "Предвыборная речь: немедленный эффект обещаний — до ~28% от исходного (цель ТЗ — 25–30%); пороговые критерии выполнения обещаний не затрагиваются"
+    },
+    {
+      "id": "speech_struct_support",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "(?i)(support|approval|sway)",
+      "context": "(?i)election.?speech",
+      "action": "scale",
+      "value": 0.3,
+      "if_value": ">0",
+      "range": [0.001, 1000],
+      "desc": "Предвыборная речь: немедленные бонусы поддержки в структуре ElectionSpeech — до ~30%"
+    },
+    {
+      "id": "dual_demand_frequency",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "^DualDemandTriggerChance$",
+      "action": "scale",
+      "value": 1.25,
+      "range": [1, 99.9],
+      "clamp": [1, 100],
+      "desc": "Политические конфликты: шанс срабатывания требований двух фракций одновременно +25% (DualDemandTriggerChance), штатные задержки сохранены"
+    },
+    {
+      "id": "ultimatum_deadline",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "^UltimatumTimeLimitInMonths$",
+      "action": "scale",
+      "value": 0.8,
+      "if_value": ">=1",
+      "range": [1, 240],
+      "clamp": [1, 240],
+      "desc": "Ультиматумы: срок на выполнение сокращён до 80% (нельзя бесконечно откладывать требование)"
+    },
+    {
+      "id": "offer_expiry",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "^MonthsTillRejectingNotTouchedOfferedDemands$",
+      "action": "scale",
+      "value": 0.8,
+      "if_value": ">=1",
+      "range": [1, 240],
+      "clamp": [1, 240],
+      "desc": "Требования фракций: неисполненные предложения отклоняются на 20% быстрее"
+    },
+    {
+      "id": "degradation_speed",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "^DegradationMonthsToMaxOutTreshhold$",
+      "action": "scale",
+      "value": 0.7,
+      "if_value": ">=1",
+      "range": [1, 240],
+      "clamp": [1, 240],
+      "desc": "Накопление недовольства: игнорируемая проблема достигает максимума за 70% исходного срока — длительное бездействие опаснее кратковременных колебаний"
+    },
+    {
+      "id": "rebel_points_rebel",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "^MonthlyRebelPointsPerRebel$",
+      "action": "scale",
+      "value": 1.25,
+      "if_value": ">0",
+      "range": [0.001, 1000],
+      "desc": "Эскалация восстаний: недовольные копят очки восстания на 25% быстрее (пороги восстаний НЕ меняются — потолок масштаба сохранён)"
+    },
+    {
+      "id": "rebel_points_guerrilla",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "^MonthlyRebelPointsPerGuerrilla$",
+      "action": "scale",
+      "value": 1.25,
+      "if_value": ">0",
+      "range": [0.001, 1000],
+      "desc": "Эскалация восстаний: партизаны копят очки восстания на 25% быстрее"
+    },
+    {
+      "id": "protest_threshold",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "^ProtestHappinessThreshold$",
+      "action": "scale",
+      "value": 1.1,
+      "range": [1, 100],
+      "clamp": [1, 100],
+      "desc": "Ранние стадии кризиса: протесты начинаются при слегка более высоком (×1.1) пороге счастья — предупреждение приходит раньше"
+    },
+    {
+      "id": "standing_gain_mult",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "^StandingGainMultiplier$",
+      "action": "scale",
+      "value": 1.2,
+      "if_value": ">0",
+      "range": [0.01, 100],
+      "desc": "Политика реактивнее: рост поддержки фракций ×1.2 — разовые успехи сильнее сказываются на рейтинге"
+    },
+    {
+      "id": "standing_loss_mult",
+      "asset_glob": "Blueprints/GameData/BP_T6SingletonData.uasset",
+      "property": "^StandingLossMulitplier$",
+      "action": "scale",
+      "value": 1.2,
+      "if_value": ">0",
+      "range": [0.01, 100],
+      "desc": "Политика реактивнее: падение поддержки фракций ×1.2 (имя с опечаткой Mulitplier — так в ассете игры)"
+    },
+    {
+      "id": "ultimatum_cooldown",
+      "asset_glob": "Blueprints/Ultimatums/Factions/.*",
+      "property": "(?i)(cooldown|cool_down)_?months?",
+      "action": "scale",
+      "value": 0.8,
+      "if_value": ">=1",
+      "range": [1, 240],
+      "clamp": [1, 240],
+      "desc": "Ультиматумы фракций: период ожидания между ультиматумами сокращён до 80% (~25% чаще), сам механизм перезарядки полностью сохранён"
+    },
+    {
+      "id": "faction_demand_cooldown",
+      "asset_glob": "Blueprints/Demands/Factions/.*",
+      "property": "(?i)(cooldown|cool_down)_?months?",
+      "action": "scale",
+      "value": 0.8,
+      "if_value": ">=1",
+      "range": [1, 240],
+      "clamp": [1, 240],
+      "desc": "Требования фракций: период перезарядки сокращён до 80% (~25% чаще), без отмены штатных задержек; требования супердержав не затрагиваются"
+    }
+  ]
+}
