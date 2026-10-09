@@ -183,6 +183,41 @@ def download(url, dest):
         shutil.copyfileobj(resp, out)
 
 
+# UnrealPak 4.25.3 — это НЕ одиночный exe: обёртке нужны рядом 12 DLL
+# (UnrealPak-Core.dll и др.). Без них процесс не запускается и молчит.
+UP_DLLS = [
+    "UnrealPak-Core.dll", "UnrealPak-CoreUObject.dll", "UnrealPak-DerivedDataCache.dll",
+    "UnrealPak-Json.dll", "UnrealPak-PakFile.dll", "UnrealPak-PakFileUtilities.dll",
+    "UnrealPak-Projects.dll", "UnrealPak-Analytics.dll", "UnrealPak-BuildSettings.dll",
+    "UnrealPak-RSA.dll", "UnrealPak-SSL.dll", "UnrealPak-TraceLog.dll", "UnrealPak.modules",
+]
+UP_DLL_BASE = "https://raw.githubusercontent.com/zhuangchengfeng/Tropico6Mod_Agent/master/UnrealPakTool/"
+
+
+def ensure_unrealpak_dlls(cfg):
+    """Докачивает компоненты UnrealPak 4.25.3 и проверяет, что он запускается."""
+    tool_dir = os.path.dirname(cfg["unrealpak_extract_exe"])
+    for name in UP_DLLS:
+        dest = os.path.join(tool_dir, name)
+        min_bytes = 100 if name == "UnrealPak.modules" else 50_000
+        if os.path.isfile(dest) and os.path.getsize(dest) > min_bytes:
+            continue
+        try:
+            download(UP_DLL_BASE + name, dest)
+        except Exception as e:  # noqa: BLE001
+            warn("Не удалось скачать компонент %s (%s). Положите файл вручную в: %s"
+                 % (name, e, dest))
+    # Проба: UnrealPak обязан печатать хотя бы справку; пустой вывод = не запускается.
+    exe = cfg["unrealpak_extract_exe"]
+    if os.path.isfile(exe):
+        proc = subprocess.run([exe], capture_output=True, shell=False)
+        if not (proc.stdout.strip() or proc.stderr.strip()):
+            die("UnrealPak не запускается (пустой вывод). Скорее всего, не хватает "
+                "DLL-компонентов рядом с %s или не установлен Microsoft Visual C++ "
+                "2015-2019 Redistributable (x64). Удалите папку tools целиком и "
+                "выполните setup заново." % exe)
+
+
 def cmd_setup(args, cfg):
     work = cfg["work_dir"]
     for sub in (DIR_ORIG, DIR_JSON, DIR_MOD, DIR_OUT, DIR_REPORTS):
@@ -207,6 +242,9 @@ def cmd_setup(args, cfg):
             warn("Не удалось скачать %s (%s). Положите файл вручную в %s "
                  "или укажите путь в hardball_config.json." %
                  (spec["label"], last_err, dest))
+
+    # Компоненты UnrealPak 4.25.3 (12 DLL) + проверка запуска
+    ensure_unrealpak_dlls(cfg)
 
     # Настройка пути к игре
     root = find_game_root(cfg)
@@ -256,6 +294,10 @@ def cmd_extract(args, cfg):
         die("UnrealPak (распаковщик) не найден: %s. Сначала выполните: "
             "python hardball.py setup" % extract_exe)
     orig_dir = os.path.join(cfg["work_dir"], DIR_ORIG)
+    # orig всегда создаём с нуля: остатки прошлой распаковки (другой версии игры)
+    # иначе могли бы попасть в мод и замаскировать сломанный распаковщик.
+    if os.path.isdir(orig_dir):
+        shutil.rmtree(orig_dir, ignore_errors=True)
     os.makedirs(orig_dir, exist_ok=True)
 
     total = 0

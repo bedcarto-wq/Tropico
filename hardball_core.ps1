@@ -515,7 +515,19 @@ $script:ToolDownloads = @(
     @{
         Key = 'unrealpak_extract'; Label = 'UnrealPak 4.25.3 (распаковка игровых .pak)';
         Path = Join-Path $script:ToolsDir 'UnrealPak_4_25_3.exe';
-        Urls = @('https://raw.githubusercontent.com/zhuangchengfeng/Tropico6Mod_Agent/master/UnrealPakTool/UnrealPak.exe')
+        Urls = @('https://raw.githubusercontent.com/zhuangchengfeng/Tropico6Mod_Agent/master/UnrealPakTool/UnrealPak.exe');
+        # UnrealPak 4.25.3 — это НЕ одиночный exe: обёртка требует рядом 12 DLL
+        # (UnrealPak-Core.dll и др.). Без них процесс не запускается и молчит.
+        Deps = @(
+           'UnrealPak-Core.dll', 'UnrealPak-CoreUObject.dll', 'UnrealPak-DerivedDataCache.dll',
+           'UnrealPak-Json.dll', 'UnrealPak-PakFile.dll', 'UnrealPak-PakFileUtilities.dll',
+           'UnrealPak-Projects.dll', 'UnrealPak-Analytics.dll', 'UnrealPak-BuildSettings.dll',
+           'UnrealPak-RSA.dll', 'UnrealPak-SSL.dll', 'UnrealPak-TraceLog.dll', 'UnrealPak.modules'
+        ) | ForEach-Object {
+            @{ Path = Join-Path $script:ToolsDir $_
+               MinBytes = $(if ($_ -eq 'UnrealPak.modules') { 100 } else { 50000 })
+               Urls = @('https://raw.githubusercontent.com/zhuangchengfeng/Tropico6Mod_Agent/master/UnrealPakTool/' + $_) }
+        }
     },
     @{
         Key = 'unrealpak_pack'; Label = 'UnrealPak 4.20 (сборка модового .pak)';
@@ -524,31 +536,64 @@ $script:ToolDownloads = @(
     }
 )
 
+function Test-FileOk([string]$p, [int64]$minBytes) {
+    return (Test-Path -LiteralPath $p -PathType Leaf) -and ((Get-Item -LiteralPath $p).Length -gt $minBytes)
+}
+
+function Save-Url([string]$url, [string]$dest, [int64]$minBytes) {
+    try {
+        Msg ('  скачиваю: ' + $url)
+        Download-FileEx $url $dest
+        if (Test-FileOk $dest $minBytes) { return $true }
+    } catch { }
+    return $false
+}
+
 function Ensure-Tools {
     if (-not (Test-Path -LiteralPath $script:ToolsDir -PathType Container)) {
-        New-Item -ItemType Directory -Path $script:ToolsDir | Out-Null
+        New-Item -ItemType Directory -Path $script:ToolsDir -Out-Null
     }
     foreach ($spec in $script:ToolDownloads) {
         $dest = $spec.Path
-        if ((Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -gt 100000)) {
-            Msg ('  [ok] ' + $spec.Label + ' уже на месте')
+        $mainOk = Test-FileOk $dest 100000
+        $depsOk = $true
+        if ($spec.ContainsKey('Deps')) {
+            foreach ($d in $spec.Deps) {
+                if (-not (Test-FileOk $d.Path $d.MinBytes)) {
+                    $got = $false
+                    foreach ($u in $d.Urls) {
+                        if (Save-Url $u $d.Path $d.MinBytes) { $got = $true; break }
+                    }
+                    if (-not $got) {
+                        $depsOk = $false
+                        Warn2 ('Не удалось скачать компонент ' + [System.IO.Path]::GetFileName($d.Path) + '. Положите файл вручную в: ' + $d.Path)
+                    }
+                }
+            }
+        }
+        $suffix = ''
+        if ($spec.ContainsKey('Deps')) { $suffix = ' (+13 компонентов)' }
+        if ($mainOk -and $depsOk) {
+            Msg ('  [ok] ' + $spec.Label + ' уже на месте' + $suffix)
             continue
         }
         $done = $false
-        $lastErr = ''
         foreach ($url in $spec.Urls) {
-            try {
-                Msg ('  скачиваю: ' + $url)
-                Download-FileEx $url $dest
-                if ((Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -gt 100000)) {
-                    Msg ('  [ok] загружен: ' + $spec.Label)
-                    $done = $true
-                    break
-                }
-            } catch { $lastErr = $_.Exception.Message }
+            if (Save-Url $url $dest 100000) { $done = $true; break }
         }
-        if (-not $done) {
-            Warn2 ('Не удалось скачать ' + $spec.Label + ' (' + $lastErr + '). Положите файл вручную в: ' + $dest)
+        if ($done -and $depsOk) {
+            Msg ('  [ok] загружен: ' + $spec.Label + $suffix)
+        } else {
+            Warn2 ('Не удалось скачать ' + $spec.Label + '. Положите файл вручную в: ' + $dest)
+        }
+    }
+    # Проба: UnrealPak обязан печатать в консоль хотя бы справку.
+    # Пустой вывод = процесс не запускается (не хватает DLL или VC++ runtime).
+    $extExe = Join-Path $script:ToolsDir 'UnrealPak_4_25_3.exe'
+    if (Test-FileOk $extExe 100000) {
+        $probe = (& $extExe 2>&1 | Out-String)
+        if (-not $probe -or -not $probe.Trim()) {
+            Die ('UnrealPak не запускается (пустой вывод). Скорее всего, не хватает DLL-компонентов рядом с UnrealPak_4_25_3.exe или не установлен Microsoft Visual C++ 2015-2019 Redistributable (x64). Удалите папку tools целиком и запустите пункт 1 заново.')
         }
     }
 }
@@ -592,7 +637,12 @@ function Invoke-Extract([hashtable]$cfg) {
     $extractExe = (Join-Path $script:ToolsDir 'UnrealPak_4_25_3.exe')
     if (-not (Test-Path -LiteralPath $extractExe)) { Die 'UnrealPak (распаковщик) не найден. Выберите пункт 1 — он скачается автоматически.' }
     $origDir = Join-Path $script:WorkDir $script:DirOrig
-    if (-not (Test-Path -LiteralPath $origDir -PathType Container)) { New-Item -ItemType Directory -Path $origDir -Force | Out-Null }
+    # orig всегда создаём с нуля: остатки прошлой распаковки (другой версии игры)
+    # иначе могли бы попасть в мод и замаскировать сломанный распаковщик.
+    if (Test-Path -LiteralPath $origDir -PathType Container) {
+        Remove-Item -LiteralPath $origDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $origDir -Force | Out-Null
 
     Msg 'Извлечение политических ассетов из игровых .pak…'
 

@@ -111,6 +111,8 @@ python hardball.py uninstall
 | Игра не найдена | `python hardball.py set-game "путь"` |
 | `Cannot find drive ... 'D' does not exist` | Скрипт перебирал диски при автопоиске игры; в свежей версии (от 09.10) это исправлено — скачайте `HardballPolitics.bat` заново. Либо запустите пункт 1: скрипт спросит путь вручную |
 | `The property 'MaxRecursionDepth' cannot be found` | Баг JSON-движка для старого Windows PowerShell 5.1; исправлен в свежей версии (от 09.10) — скачайте `HardballPolitics.bat` заново |
+| Извлечение даёт 0 файлов | Скачайте свежую версию `HardballPolitics.bat` (до 09.10.2026 она скачивала UnrealPak без обязательных DLL). При повторении пришлите файл `work\reports\extract_debug.txt` |
+| `UnrealPak не запускается (пустой вывод)` | Не хватает DLL рядом с `tools\UnrealPak_4_25_3.exe` или не установлен [Microsoft Visual C++ 2015-2019 Redistributable (x64)](https://aka.ms/vs/16/release/VC_redist.x64.exe). Удалите папку `tools` и запустите пункт 1 заново |
 | Ошибка при extract (magic number) | Ваша версия игры использует новый формат pak — укажите путь к UnrealPak из свежей версии UE4 в `hardball_config.json` (`unrealpak_extract_exe`) |
 | Ни одно правило не сработало в patch | Выполните `scan` и пришлите отчёт разработчику мода — структура ассетов вашей версии отличается |
 | Мод не влияет на игру | Убедитесь, что `.pak` лежит именно в `Tropico6\Content\Paks`, и что его имя начинается с `z_` |
