@@ -603,6 +603,30 @@ function Invoke-Extract([hashtable]$cfg) {
     if (-not (Test-Path -LiteralPath $origDir -PathType Container)) { New-Item -ItemType Directory -Path $origDir -Force | Out-Null }
 
     Msg 'Извлечение политических ассетов из игровых .pak…'
+
+    # --- Диагностика: список .pak, проверка IoStore, лог распаковки ---
+    $reportsDir = Join-Path $script:WorkDir $script:DirReports
+    if (-not (Test-Path -LiteralPath $reportsDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $reportsDir -Force | Out-Null
+    }
+    $dbgPath = Join-Path $reportsDir 'extract_debug.txt'
+    if (Test-Path -LiteralPath $dbgPath) { Remove-Item -LiteralPath $dbgPath -Force }
+    [System.IO.File]::WriteAllText($dbgPath, ('Extract log: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "`r`n"), $Utf8NoBom)
+    $paksDir = Get-PaksDir $cfg
+    foreach ($pak in $pakFiles) {
+        $sz = [Math]::Round((Get-Item -LiteralPath $pak).Length / 1MB)
+        Msg ('  pak: ' + [System.IO.Path]::GetFileName($pak) + ' (' + $sz + ' МБ)')
+        [System.IO.File]::AppendAllText($dbgPath, ('pak: ' + $pak + ' (' + $sz + ' MB)' + "`r`n"), $Utf8NoBom)
+    }
+    if ($paksDir) {
+        $iostore = @(Get-ChildItem -LiteralPath $paksDir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -eq '.utoc' -or $_.Extension -eq '.ucas' })
+        if ($iostore.Count -gt 0) {
+            Warn2 ('В папке Paks найдены IoStore-контейнеры (.utoc/.ucas): ' + (($iostore | ForEach-Object { $_.Name }) -join ', '))
+            Warn2 'Эта версия игры хранит ассеты в новом формате IoStore, который классический UnrealPak не распаковывает. Пришлите extract_debug.txt из папки reports — подготовлю поддержку.'
+        }
+    }
+
     # UnrealPak извлекает файлы с путём монтирования ../../../Tropico6/Content/...,
     # то есть НАД папкой назначения. Поэтому dest делаем на три уровня внутри orig:
     # при любом варианте поведения UnrealPak файлы окажутся внутри orig/ и будут найдены.
@@ -616,7 +640,8 @@ function Invoke-Extract([hashtable]$cfg) {
         foreach ($pak in $pakFiles) {
             $name = [System.IO.Path]::GetFileName($pak)
             if ($name.Contains('_VO') -or $name.ToLower().Contains('vo_')) { continue }
-            $null = (& $extractExe $pak '-Extract' $tmpDir ("-Filter=" + $pattern) 2>&1 | Out-String)
+            $outText = (& $extractExe $pak '-Extract' $tmpDir ("-Filter=" + $pattern) 2>&1 | Out-String)
+            [System.IO.File]::AppendAllText($dbgPath, ('=== ' + $name + ' :: ' + $pattern + ' ===' + "`r`n" + $outText + "`r`n"), $Utf8NoBom)
             # ненулевой код возврата здесь нормален: фильтр мог ничего не найти в этом паке
         }
         $contentRoot = Join-Sub $origDir 'Tropico6/Content'
@@ -640,7 +665,15 @@ function Invoke-Extract([hashtable]$cfg) {
     }
     Msg ''
     Msg ('Итого извлечено файлов: ' + $total)
-    if ($total -eq 0) { Die 'Не извлечено ни одного файла — проверьте версию игры и путь к ней.' }
+    if ($total -eq 0) {
+        Msg ''
+        Msg '---- Диагностика (конец лога UnrealPak) ----'
+        $dbgLines = @([System.IO.File]::ReadAllLines($dbgPath))
+        $from = [Math]::Max(0, $dbgLines.Count - 40)
+        for ($k = $from; $k -lt $dbgLines.Count; $k++) { Msg ('  ' + $dbgLines[$k]) }
+        Msg ('Полный лог: ' + $dbgPath)
+        Die 'Не извлечено ни одного файла. Пришлите файл extract_debug.txt (лежит рядом, в папке reports) — по нему станет ясно, в чём дело.'
+    }
 }
 
 # ---------------------------------------------------------------------------
