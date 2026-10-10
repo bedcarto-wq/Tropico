@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Hardball Politics v1.14 - Tropico 6 Mod Builder
+title Hardball Politics v1.15 - Tropico 6 Mod Builder
 set "HB0=%~f0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$raw=[IO.File]::ReadAllText($env:HB0,[Text.Encoding]::UTF8); $m=('#'+'::PS1PAYLOAD::'); $global:HardballAppDir=Split-Path -Parent $env:HB0; $i=$raw.IndexOf($m,[System.StringComparison]::Ordinal); if($i -lt 0){throw 'payload not found'}; Invoke-Expression $raw.Substring($i+$m.Length)"
 if errorlevel 1 pause
@@ -27,7 +27,7 @@ $script:ModId = 'HardballPolitics'
 $script:ModTitle = 'Hardball Politics — Политика без поблажек'
 # Версия видна в меню, статусе и каждом отчёте: по ней сразу понятно,
 # что запущен свежий файл bat, а не старая копия из загрузок.
-$script:ScriptVersion = 'v1.14 (10.10.2026)'
+$script:ScriptVersion = 'v1.15 (10.10.2026)'
 $script:ModPakName = 'z_HardballPolitics.pak'
 $script:WorkDir = Join-Path $script:AppDir 'work'
 $script:ToolsDir = Join-Path $script:AppDir 'tools'
@@ -116,9 +116,9 @@ $script:RecipeJson = @'
       "property": "^DualDemandTriggerChance$",
       "action": "scale",
       "value": 1.25,
-      "range": [1, 99.9],
-      "clamp": [1, 100],
-      "desc": "Политические конфликты: шанс срабатывания требований двух фракций одновременно +25% (DualDemandTriggerChance), штатные задержки сохранены"
+      "range": [0.01, 99.9],
+      "clamp": [0.01, 99.9],
+      "desc": "Политические конфликты: шанс срабатывания требований двух фракций одновременно +25% (DualDemandTriggerChance; в новых версиях игры значение дробное 0..1 — напр. 0.75 -> 0.9375, в старых целое 0..100 — напр. 75 -> 93.75), штатные задержки сохранены"
     },
     {
       "id": "ultimatum_deadline",
@@ -1047,13 +1047,19 @@ function Get-RoundtripMap([string]$modUasset) {
     $tmpJson = $modUasset.Substring(0, $modUasset.Length - 7) + '.verify.json'
     Invoke-ToJson $modUasset $tmpJson
     $data = ConvertFrom-JsonText (Read-Text $tmpJson)
+    # путь -> СПИСОК значений в порядке перечисления узлов.
+    # Раньше по пути сохранялось только первое значение: у массивов
+    # (по значению на каждый уровень сложности) все узлы одного пути
+    # сворачивались в первый элемент, и запись элементов 2..N считалась
+    # неудачей, хотя UAssetGUI записал их корректно (фантомные ошибки).
     $actual = @{}
     foreach ($pair in @(Get-AllNodes (Get-JProp $data 'Exports'))) {
         $node = $pair[0]; $pathArr = $pair[1]
         $val = Get-JProp $node 'Value'
         if (Test-Number $val) {
             $k = ($pathArr -join ' / ')
-            if (-not $actual.ContainsKey($k)) { $actual[$k] = $val }
+            if (-not $actual.ContainsKey($k)) { $actual[$k] = @() }
+            $actual[$k] += $val
         }
     }
     try { Remove-Item -LiteralPath $tmpJson -Force -ErrorAction SilentlyContinue } catch { }
@@ -1063,7 +1069,13 @@ function Get-RoundtripMap([string]$modUasset) {
 function Test-RoundtripOk([hashtable]$actual, [hashtable]$change) {
     $k = [string]$change['Path']
     if (-not $actual.ContainsKey($k)) { return $false }
-    $got = [double]$actual[$k]
+    # у массивов узлов один путь и несколько значений: сверяемся
+    # с тем элементом, который меняли (Idx), а не с первым попавшимся
+    $vals = @($actual[$k])
+    $idx = $change['Idx']
+    if ($null -eq $idx) { $idx = 0 }
+    if ($idx -ge $vals.Count) { return $false }
+    $got = [double]$vals[[int]$idx]
     $want = [double]$change['New']
     return ([Math]::Abs($got - $want) -le ([Math]::Abs($want) * 1e-4 + 1e-6))
 }
@@ -1144,12 +1156,20 @@ function Invoke-Patch {
             $data = ConvertFrom-JsonText (Read-Text $jpath)
 
             $changes = @()
+            # путь -> счётчик числовых узлов: индекс элемента в списке значений пути
+            $idxByPath = @{}
             foreach ($pair in @(Get-AllNodes (Get-JProp $data 'Exports'))) {
                 $node = $pair[0]; $pathArr = $pair[1]
                 $pathStr = ($pathArr -join ' / ')
+                $val = Get-JProp $node 'Value'
+                $idx = -1
+                if (Test-Number $val) {
+                    if (-not $idxByPath.ContainsKey($pathStr)) { $idxByPath[$pathStr] = 0 }
+                    $idx = $idxByPath[$pathStr]
+                    $idxByPath[$pathStr] = $idx + 1
+                }
                 foreach ($rule in $rules) {
-                    $val = Get-JProp $node 'Value'
-                    if (-not (Test-Number $val)) { continue }
+                    if ($idx -lt 0) { continue }
                     if (-not (Test-RuleMatch $rule $node $pathStr)) { continue }
                     $res = Get-NewValue $rule $val
                     if (-not $res.Changed) { continue }
@@ -1157,7 +1177,7 @@ function Invoke-Patch {
                         Rule = [string](Get-JProp $rule 'id')
                         Desc = [string](Get-JProp $rule 'desc')
                         Asset = $rel; Path = $pathStr
-                        Old = $val; New = $res.New
+                        Old = $val; New = $res.New; Idx = $idx
                     }
                     $changes += $entry
                     $log += $entry
@@ -1189,7 +1209,7 @@ function Invoke-Patch {
     $logPath = Join-Path $reportsDir 'patch_log.json'
     Write-Text $logPath (ConvertTo-JsonText @($log | ForEach-Object {
         $e = $_; $rec = @{}
-        foreach ($k in @('Rule','Desc','Asset','Path','Old','New')) { $rec[$k] = $e[$k] }
+        foreach ($k in @('Rule','Desc','Asset','Path','Old','New','Idx')) { $rec[$k] = $e[$k] }
         if ($e.ContainsKey('Failed')) { $rec['Failed'] = $e['Failed'] }
         $rec
     }))

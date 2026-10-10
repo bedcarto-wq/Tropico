@@ -40,7 +40,7 @@ MOD_ID = "HardballPolitics"
 MOD_TITLE = "Hardball Politics — Политика без поблажек"
 # Версия печатается в статусе, отчётах и логах: по ней сразу видно, что
 # запущена свежая версия скрипта, а не старая копия.
-SCRIPT_VERSION = "v1.14 (10.10.2026)"
+SCRIPT_VERSION = "v1.15 (10.10.2026)"
 MOD_PAK_NAME = "z_HardballPolitics.pak"
 
 DEFAULT_CONFIG = {
@@ -789,10 +789,14 @@ def verify_roundtrip(cfg, mod_uasset, expected_changes):
     for node, path in iter_nodes(data.get("Exports", [])):
         val = node.get("Value")
         if isinstance(val, (int, float)) and not isinstance(val, bool):
-            actual.setdefault(path_str(path), val)
+            actual.setdefault(path_str(path), []).append(val)
     missing = []
     for ch in expected_changes:
-        got = actual.get(ch["path"])
+        # у массивов узлов (по значению на уровень сложности) один путь
+        # и несколько значений: сверяемся с тем элементом, который меняли
+        vals = actual.get(ch["path"]) or []
+        idx = ch.get("idx", 0)
+        got = vals[idx] if idx < len(vals) else None
         if got is None or not math.isclose(float(got), float(ch["new"]),
                                            rel_tol=1e-4, abs_tol=1e-6):
             missing.append(ch)
@@ -866,8 +870,18 @@ def cmd_patch(args, cfg):
                 data = json.load(f)
 
             changes = []
+            idx_by_path = {}
             for node, path in iter_nodes(data.get("Exports", [])):
+                val = node.get("Value")
+                numeric = isinstance(val, (int, float)) and not isinstance(val, bool)
+                idx = -1
+                if numeric:
+                    key = path_str(path)
+                    idx = idx_by_path.get(key, 0)
+                    idx_by_path[key] = idx + 1
                 for rule in rules:
+                    if idx < 0:
+                        continue
                     if not rule_matches_node(rule, node, path):
                         continue
                     new, changed = apply_rule_to_value(rule, node["Value"])
@@ -880,6 +894,7 @@ def cmd_patch(args, cfg):
                         "path": path_str(path),
                         "old": node["Value"],
                         "new": new,
+                        "idx": idx,
                     }
                     changes.append(entry)
                     node["Value"] = new
