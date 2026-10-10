@@ -40,7 +40,7 @@ MOD_ID = "HardballPolitics"
 MOD_TITLE = "Hardball Politics — Политика без поблажек"
 # Версия печатается в статусе, отчётах и логах: по ней сразу видно, что
 # запущена свежая версия скрипта, а не старая копия.
-SCRIPT_VERSION = "v1.10 (10.10.2026)"
+SCRIPT_VERSION = "v1.11 (10.10.2026)"
 MOD_PAK_NAME = "z_HardballPolitics.pak"
 
 DEFAULT_CONFIG = {
@@ -391,6 +391,7 @@ def cmd_extract(args, cfg):
     if not os.path.isfile(extract_exe):
         die("UnrealPak (распаковщик) не найден: %s. Сначала выполните: "
             "python hardball.py setup" % extract_exe)
+    pack_exe = cfg["unrealpak_pack_exe"]
     orig_dir = os.path.join(cfg["work_dir"], DIR_ORIG)
     # orig всегда создаём с нуля: остатки прошлой распаковки (другой версии игры)
     # иначе могли бы попасть в мод и замаскировать сломанный распаковщик.
@@ -483,6 +484,14 @@ def cmd_extract(args, cfg):
         # --- Запасной путь: оглавление pak (-List) и извлечение по точным именам ---
         msg("")
         msg("Прямые фильтры ничего не дали. Читаю оглавления pak-ов (-List)…")
+        # -List поддерживает не каждая сборка UnrealPak: упаковщик 4.20 умеет,
+        # а распаковщик 4.25.3 — нет («unknown tokens at argument 0: -List»).
+        # Поэтому перебираем инструменты в порядке надёжности.
+        list_exes = []
+        if os.path.isfile(pack_exe):
+            list_exes.append(pack_exe)
+        if extract_exe not in list_exes:
+            list_exes.append(extract_exe)
         plain = [p.strip("*").lower() for p in EXTRACT_FILTERS]
         all_matches = {}  # точное имя -> pak
         entry_re = re.compile(r"[\w\-./\\]+\.(?:uasset|uexp|ubulk|umap)")
@@ -490,12 +499,33 @@ def cmd_extract(args, cfg):
             name = os.path.basename(pak)
             if "_VO" in name or "vo_" in name.lower():
                 continue
-            started, code, out, err_text, start_error = run_tool(
-                [extract_exe, pak, "-List"])
-            if not started:
-                dbg("--- -List :: %s :: ОТКАЗ ЗАПУСКА: %s" % (name, start_error))
-                run_failures += 1
+            best = None
+            for le in list_exes:
+                le_name = os.path.basename(le)
+                started, code, out, err_text, start_error = run_tool(
+                    [le, pak, "-List"])
+                if not started:
+                    dbg("--- -List :: %s :: %s :: ОТКАЗ ЗАПУСКА: %s"
+                        % (name, le_name, start_error))
+                    run_failures += 1
+                    continue
+                probe = len(entry_re.findall(out))
+                err_line = ""
+                for ln in (out + err_text).splitlines():
+                    if re.search(r"Error|error|unknown tokens", ln):
+                        err_line = ln[:300]
+                        break
+                dbg("--- -List :: %s :: %s :: код %s :: записей ассетов: %d%s"
+                    % (name, le_name, code, probe,
+                       (" :: " + err_line) if err_line else ""))
+                if best is None:
+                    best = (started, code, out, err_text)
+                if probe > 0:
+                    best = (started, code, out, err_text)
+                    break
+            if best is None:
                 continue
+            started, code, out, err_text = best
             list_path = os.path.join(
                 reports_dir, "pak_list_%s.txt" % name[:-len(".pak")])
             with open(list_path, "w", encoding="utf-8") as f:
@@ -520,19 +550,31 @@ def cmd_extract(args, cfg):
             if len(all_matches) > 500:
                 msg("  (совпадений слишком много — извлеку первые 500)")
             msg("  Извлекаю по точным именам: %d файлов…" % len(all_matches))
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            os.makedirs(tmp_dir, exist_ok=True)
-            for i, e in enumerate(sorted(all_matches)):
-                if i >= 500:
+            # Пробуем сначала распаковщик 4.25.3, затем (если ничего не
+            # извлеклось) упаковщик 4.20: у того заявлены и -Extract, и -Filter.
+            try_exes = [extract_exe]
+            if os.path.isfile(pack_exe) and pack_exe not in try_exes:
+                try_exes.append(pack_exe)
+            seen = set()
+            for try_exe in try_exes:
+                if total > 0:
                     break
-                started, code, out, err_text, start_error = run_tool(
-                    [extract_exe, all_matches[e], "-Extract", tmp_dir, "-Filter=" + e])
-                status = ("код %s" % code) if started else ("ОТКАЗ: %s" % start_error)
-                dbg("--- точное имя :: %s :: %s\n%s" % (e, status, out + err_text))
-                if not started:
-                    run_failures += 1
-            total = copy_extracted(orig_dir, set())
-            msg("  Извлечено по точным именам: %d файлов" % total)
+                try_name = os.path.basename(try_exe)
+                if try_exe != extract_exe:
+                    msg("  Пробую извлечение через %s…" % try_name)
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                os.makedirs(tmp_dir, exist_ok=True)
+                for i, e in enumerate(sorted(all_matches)):
+                    if i >= 500:
+                        break
+                    started, code, out, err_text, start_error = run_tool(
+                        [try_exe, all_matches[e], "-Extract", tmp_dir, "-Filter=" + e])
+                    status = ("код %s" % code) if started else ("ОТКАЗ: %s" % start_error)
+                    dbg("--- точное имя :: %s :: %s :: %s" % (try_name, e, status))
+                    if not started:
+                        run_failures += 1
+                total = copy_extracted(orig_dir, seen)
+                msg("  Извлечено по точным именам (%s): %d файлов" % (try_name, total))
 
     if total == 0:
         msg("")

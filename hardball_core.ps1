@@ -19,7 +19,7 @@ $script:ModId = 'HardballPolitics'
 $script:ModTitle = 'Hardball Politics — Политика без поблажек'
 # Версия видна в меню, статусе и каждом отчёте: по ней сразу понятно,
 # что запущен свежий файл bat, а не старая копия из загрузок.
-$script:ScriptVersion = 'v1.10 (10.10.2026)'
+$script:ScriptVersion = 'v1.11 (10.10.2026)'
 $script:ModPakName = 'z_HardballPolitics.pak'
 $script:WorkDir = Join-Path $script:AppDir 'work'
 $script:ToolsDir = Join-Path $script:AppDir 'tools'
@@ -802,17 +802,35 @@ function Invoke-Extract([hashtable]$cfg) {
         # в новой версии игры или несовпадение семантики -Filter. -List отвечает на всё.
         Msg ''
         Msg 'Прямые фильтры ничего не дали. Читаю оглавления pak-ов (-List)...'
+        # -List поддерживает не каждая сборка UnrealPak: упаковщик 4.20 умеет,
+        # а скачанный распаковщик 4.25.3 — нет («unknown tokens at argument 0:
+        # -List»). Поэтому перебираем инструменты в порядке надёжности.
+        $packExeList = Join-Path $script:ToolsDir 'UnrealPak_UE4_20.exe'
+        $listExes = @()
+        if (Test-Path -LiteralPath $packExeList) { $listExes += $packExeList }
+        if ($extractExe -and ($listExes -notcontains $extractExe)) { $listExes += $extractExe }
         $plainPatterns = @($script:ExtractFilters | ForEach-Object { $_.Trim('*').ToLowerInvariant() })
         $allMatches = @{}
         foreach ($pak in $pakFiles) {
             $name = [System.IO.Path]::GetFileName($pak)
             if ($name.Contains('_VO') -or $name.ToLower().Contains('vo_')) { continue }
-            $r = Invoke-ToolRun $extractExe @($pak, '-List')
-            if (-not $r.Started) {
-                [System.IO.File]::AppendAllText($dbgPath, ('--- -List :: ' + $name + ' :: ОТКАЗ ЗАПУСКА: ' + $r.StartError + "`r`n"), $Utf8NoBom)
-                $runFailures++
-                continue
+            $r = $null
+            foreach ($le in $listExes) {
+                $rr = Invoke-ToolRun $le @($pak, '-List')
+                $leName = [System.IO.Path]::GetFileName($le)
+                if (-not $rr.Started) {
+                    [System.IO.File]::AppendAllText($dbgPath, ('--- -List :: ' + $name + ' :: ' + $leName + ' :: ОТКАЗ ЗАПУСКА: ' + $rr.StartError + "`r`n"), $Utf8NoBom)
+                    $runFailures++
+                    continue
+                }
+                $probe = 0
+                foreach ($m in [regex]::Matches($rr.Out, '\.(?:uasset|uexp|ubulk|umap)(?![A-Za-z])')) { $probe++ }
+                $errLine = (($rr.Out + $rr.Err) -split "`r?`n" | Where-Object { $_ -match 'Error|error|unknown tokens' } | Select-Object -First 1)
+                [System.IO.File]::AppendAllText($dbgPath, ('--- -List :: ' + $name + ' :: ' + $leName + ' :: код ' + $rr.ExitCode + ' :: записей ассетов: ' + $probe + $(if ($errLine) { ' :: ' + $errLine.Substring(0, [Math]::Min(300, $errLine.Length)) } else { '' }) + "`r`n"), $Utf8NoBom)
+                if (-not $r) { $r = $rr }
+                if ($probe -gt 0) { $r = $rr; break }
             }
+            if (-not $r) { continue }
             $listPath = Join-Path $reportsDir ('pak_list_' + ($name -replace '\.pak$', '') + '.txt')
             [System.IO.File]::WriteAllText($listPath, $r.Out, $Utf8NoBom)
             [System.IO.File]::AppendAllText($dbgPath, ('--- -List :: ' + $name + ' :: код ' + $r.ExitCode + ' :: полная распечатка сохранена: ' + $listPath + "`r`n"), $Utf8NoBom)
@@ -832,19 +850,29 @@ function Invoke-Extract([hashtable]$cfg) {
         if ($allMatches.Count -gt 0) {
             Msg ('  Извлекаю по точным именам: ' + $allMatches.Count + ' файлов...')
             if ($allMatches.Count -gt 500) { Msg ('  (совпадений слишком много — извлеку первые 500)') }
-            if (Test-Path -LiteralPath $tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force }
-            New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
-            $i = 0
-            foreach ($e in $allMatches.Keys) {
-                $i++
-                if ($i -gt 500) { break }
-                $r = Invoke-ToolRun $extractExe @($allMatches[$e], '-Extract', $tmpDir, ('-Filter=' + $e))
-                $status2 = $(if ($r.Started) { ('код ' + $r.ExitCode) } else { ('ОТКАЗ: ' + $r.StartError) })
-                [System.IO.File]::AppendAllText($dbgPath, ('--- точное имя :: ' + $e + ' :: ' + $status2 + "`r`n" + ($r.Out + $r.Err) + "`r`n"), $Utf8NoBom)
-                if (-not $r.Started) { $runFailures++ }
+            # Пробуем сначала распаковщик 4.25.3, затем (если ничего не извлеклось)
+            # упаковщик 4.20: у того в справке заявлены и -Extract, и -Filter.
+            $extractTryExes = @($extractExe)
+            if ((Test-Path -LiteralPath $packExeList) -and ($extractTryExes -notcontains $packExeList)) { $extractTryExes += $packExeList }
+            $seenExact = @{}
+            foreach ($tryExe in $extractTryExes) {
+                if ($total -gt 0) { break }
+                $tryName = [System.IO.Path]::GetFileName($tryExe)
+                if ($tryExe -ne $extractExe) { Msg ('  Пробую извлечение через ' + $tryName + '...') }
+                if (Test-Path -LiteralPath $tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force }
+                New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+                $i = 0
+                foreach ($e in $allMatches.Keys) {
+                    $i++
+                    if ($i -gt 500) { break }
+                    $r = Invoke-ToolRun $tryExe @($allMatches[$e], '-Extract', $tmpDir, ('-Filter=' + $e))
+                    $status2 = $(if ($r.Started) { ('код ' + $r.ExitCode) } else { ('ОТКАЗ: ' + $r.StartError) })
+                    [System.IO.File]::AppendAllText($dbgPath, ('--- точное имя :: ' + $tryName + ' :: ' + $e + ' :: ' + $status2 + "`r`n"), $Utf8NoBom)
+                    if (-not $r.Started) { $runFailures++ }
+                }
+                $total = Copy-ExtractedFiles $origDir $seenExact
+                Msg ('  Извлечено по точным именам (' + $tryName + '): ' + $total + ' файлов')
             }
-            $total = Copy-ExtractedFiles $origDir @{}
-            Msg ('  Извлечено по точным именам: ' + $total + ' файлов')
         }
     }
 
