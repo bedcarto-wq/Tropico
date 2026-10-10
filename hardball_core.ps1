@@ -19,7 +19,7 @@ $script:ModId = 'HardballPolitics'
 $script:ModTitle = 'Hardball Politics — Политика без поблажек'
 # Версия видна в меню, статусе и каждом отчёте: по ней сразу понятно,
 # что запущен свежий файл bat, а не старая копия из загрузок.
-$script:ScriptVersion = 'v1.15 (10.10.2026)'
+$script:ScriptVersion = 'v1.16 (11.10.2026)'
 $script:ModPakName = 'z_HardballPolitics.pak'
 $script:WorkDir = Join-Path $script:AppDir 'work'
 $script:ToolsDir = Join-Path $script:AppDir 'tools'
@@ -1228,10 +1228,15 @@ function Invoke-Patch {
 # package / verify / install / uninstall
 # ---------------------------------------------------------------------------
 function Invoke-Package {
-    $modRoot = Join-Path (Join-Path $script:WorkDir $script:DirMod) 'Tropico6'
+    # Корень упаковки — именно папка Content: UnrealPak кладёт в .pak путь
+    # "<точка монтирования>" + путь относительно корня из файла-ответа.
+    # Если корень modfiles\Tropico6, файлы получали путь Content/Blueprints/...
+    # и в .pak задваивались как ../../../Tropico6/Content/Content/Blueprints/...,
+    # из-за чего игра не находила подмену (v1.15).
+    $contentRoot = Join-Sub (Join-Path (Join-Path $script:WorkDir $script:DirMod) 'Tropico6') 'Content'
     $hasUasset = $false
-    if (Test-Path -LiteralPath $modRoot) {
-        foreach ($f in (Get-ChildItem -LiteralPath $modRoot -Recurse -File -Filter '*.uasset' -ErrorAction SilentlyContinue)) { $hasUasset = $true; break }
+    if (Test-Path -LiteralPath $contentRoot) {
+        foreach ($f in (Get-ChildItem -LiteralPath $contentRoot -Recurse -File -Filter '*.uasset' -ErrorAction SilentlyContinue)) { $hasUasset = $true; break }
     }
     if (-not $hasUasset) { Die 'Нет исправленных файлов. Сначала примените правки (пункт 1).' }
     $packExe = Join-Path $script:ToolsDir 'UnrealPak_UE4_20.exe'
@@ -1242,8 +1247,10 @@ function Invoke-Package {
     if (Test-Path -LiteralPath $pakPath) { Remove-Item -LiteralPath $pakPath -Force }
 
     # файл-ответ для UnrealPak (только абсолютные пути!)
+    # монтирование ../../../Tropico6/Content/ — как у игровых pak-ов;
+    # корень подстановки тоже Content, поэтому пути в .pak совпадают с игровыми.
     $resp = Join-Path $script:WorkDir '_pak_response.txt'
-    Write-Text $resp ('"' + $modRoot + '\*" "../../../Tropico6/Content/"')
+    Write-Text $resp ('"' + $contentRoot + '\*" "../../../Tropico6/Content/"')
     $null = Invoke-Tool $packExe @($pakPath, ('-Create=' + $resp), '-compress') 'упаковка мода'
 
     if (-not (Test-Path -LiteralPath $pakPath) -or ((Get-Item -LiteralPath $pakPath).Length -lt 500)) {
@@ -1278,17 +1285,52 @@ function Invoke-Verify {
     Msg 'Проверка содержимого .pak…'
     $packExe = Join-Path $script:ToolsDir 'UnrealPak_UE4_20.exe'
     $listing = Invoke-Tool $packExe @($pakPath, '-List') 'чтение содержимого .pak'
+    # Реальный UnrealPak печатает пути с обратными слэшами и в кавычках
+    # (в отличие от моков в тестах), поэтому сравниваем по нормализованной копии.
+    $norm = ($listing -replace '"', '') -replace '\\', '/'
+    $reportsDir = Join-Path $script:WorkDir $script:DirReports
+    if (-not (Test-Path -LiteralPath $reportsDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $reportsDir -Force | Out-Null
+    }
+    Write-Text (Join-Path $reportsDir 'pak_list_mod.txt') $listing
+    # Все записи .pak (пути ассетов из листинга, нормализованные)
+    $entries = @()
+    foreach ($m in [regex]::Matches($norm, '[\w\-\./]+\.(?:uasset|uexp|ubulk|umap)')) {
+        $entries += $m.Value
+    }
+    if ($entries.Count -eq 0) { Die 'Не удалось прочитать список файлов из .pak (листинг пуст или не распознан). См. reports\pak_list_mod.txt' }
     $expected = @{}
     foreach ($e in $logItems) { $expected[[string](Get-JProp $e 'Asset')] = $true }
+    $mountOk = '../../../Tropico6/Content/'
     $missing = @()
+    $badMount = @()
     foreach ($rel in ($expected.Keys | Sort-Object)) {
-        if (-not $listing.Contains($rel)) { $missing += $rel }
+        $suffix = '/' + ($rel -replace '\\', '/')
+        $found = $null
+        foreach ($en in $entries) {
+            if ($en.EndsWith($suffix)) { $found = $en; break }
+        }
+        if (-not $found) { $missing += $rel; continue }
+        # запись найдена, но проверяем ещё точку монтирования:
+        # при неверном монтировании игра не подгрузит подмену.
+        if (-not $found.StartsWith($mountOk) -or $found.Contains('/Content/Content/')) {
+            $badMount += $rel
+        }
+    }
+    if ($badMount.Count -gt 0) {
+        foreach ($rel in $badMount) { Warn2 ('неверная точка монтирования для: ' + $rel) }
+        Warn2 ('Ожидается префикс ' + $mountOk + ' — см. reports\pak_list_mod.txt')
+        Die 'Проверка не пройдена.'
     }
     if ($missing.Count -gt 0) {
         foreach ($rel in $missing) { Warn2 ('в .pak нет файла: ' + $rel) }
+        Msg 'Первые записи листинга .pak (для диагностики):'
+        $sample = @($entries | Select-Object -First 12)
+        foreach ($s in $sample) { Msg ('  ' + $s) }
+        Msg ('Полный листинг: ' + (Join-Path $reportsDir 'pak_list_mod.txt'))
         Die 'Проверка не пройдена.'
     }
-    Msg ('[ok] Все ' + $expected.Count + ' изменённых ассетов присутствуют в .pak.')
+    Msg ('[ok] Все ' + $expected.Count + ' изменённых ассетов присутствуют в .pak (монтирование корректно).')
 }
 
 function Invoke-Install([hashtable]$cfg) {
@@ -1430,6 +1472,7 @@ function Show-MainMenu {
         Msg '  2) Удалить мод из игры'
         Msg '  3) Статус и диагностика'
         Msg '  4) Подробный отчёт о параметрах игры (scan)'
+        Msg '  5) Пересобрать .pak и установить из уже готовых правок (без извлечения)'
         Msg '  0) Выход'
         $choice = Read-Host 'Выберите пункт'
         try {
@@ -1438,6 +1481,13 @@ function Show-MainMenu {
                 '2' { Invoke-Uninstall (Get-Config) }
                 '3' { Show-Status (Get-Config) }
                 '4' { Invoke-Scan }
+                '5' {
+                    Invoke-Package
+                    Msg ''
+                    Invoke-Verify
+                    Msg ''
+                    Invoke-Install (Get-Config)
+                }
                 '0' { return }
                 default { Msg 'Нет такого пункта.' }
             }

@@ -40,7 +40,7 @@ MOD_ID = "HardballPolitics"
 MOD_TITLE = "Hardball Politics — Политика без поблажек"
 # Версия печатается в статусе, отчётах и логах: по ней сразу видно, что
 # запущена свежая версия скрипта, а не старая копия.
-SCRIPT_VERSION = "v1.15 (10.10.2026)"
+SCRIPT_VERSION = "v1.16 (11.10.2026)"
 MOD_PAK_NAME = "z_HardballPolitics.pak"
 
 DEFAULT_CONFIG = {
@@ -947,9 +947,13 @@ def cmd_patch(args, cfg):
 # ---------------------------------------------------------------------------
 
 def cmd_package(args, cfg):
-    mod_root = os.path.join(cfg["work_dir"], DIR_MOD, "Tropico6")
+    # Корень упаковки — именно папка Content: UnrealPak кладёт в .pak путь
+    # "<точка монтирования>" + путь относительно корня из файла-ответа.
+    # При корне modfiles\Tropico6 пути задваивались (.../Content/Content/...),
+    # и игра не находила подмену (v1.15).
+    content_root = os.path.join(cfg["work_dir"], DIR_MOD, "Tropico6", "Content")
     has_uasset = False
-    for _r, _d, fs in os.walk(mod_root):
+    for _r, _d, fs in os.walk(content_root):
         if any(f.endswith(".uasset") for f in fs):
             has_uasset = True
             break
@@ -966,9 +970,11 @@ def cmd_package(args, cfg):
         os.remove(pak_path)
 
     # Файл-ответ для UnrealPak (только абсолютные пути!)
+    # монтирование ../../../Tropico6/Content/ — как у игровых pak-ов;
+    # корень подстановки тоже Content, поэтому пути в .pak совпадают с игровыми.
     resp = os.path.join(cfg["work_dir"], "_pak_response.txt")
     with open(resp, "w", encoding="utf-8") as f:
-        f.write('"%s\\*" "../../../Tropico6/Content/"' % mod_root)
+        f.write('"%s\\*" "../../../Tropico6/Content/"' % content_root)
     run_cmd([pack_exe, pak_path, "-Create=" + resp, "-compress"], "упаковка мода")
 
     if not os.path.isfile(pak_path) or os.path.getsize(pak_path) < 500:
@@ -1035,13 +1041,44 @@ def cmd_verify(args, cfg):
     msg("Проверка содержимого .pak…")
     listing = run_cmd([cfg["unrealpak_pack_exe"], pak_path, "-List"],
                       "чтение содержимого .pak")
+    # Реальный UnrealPak печатает пути с обратными слэшами и в кавычках —
+    # сравниваем по нормализованной копии и дополнительно проверяем монтирование.
+    norm = listing.replace('"', "").replace("\\", "/")
+    reports_dir = os.path.join(cfg["work_dir"], DIR_REPORTS)
+    os.makedirs(reports_dir, exist_ok=True)
+    with open(os.path.join(reports_dir, "pak_list_mod.txt"), "w",
+              encoding="utf-8") as f:
+        f.write(listing)
+    entries = re.findall(r"[\w\-./]+\.(?:uasset|uexp|ubulk|umap)", norm)
+    if not entries:
+        die("Не удалось прочитать список файлов из .pak "
+            "(листинг пуст или не распознан). См. reports/pak_list_mod.txt")
     expected = sorted({e["asset"] for e in log})
-    missing = [rel for rel in expected if rel not in listing]
+    mount_ok = "../../../Tropico6/Content/"
+    missing = [rel for rel in expected
+               if not any(en.endswith("/" + rel.replace("\\", "/"))
+                          for en in entries)]
+    bad_mount = []
+    for rel in expected:
+        for en in entries:
+            if en.endswith("/" + rel.replace("\\", "/")):
+                if not en.startswith(mount_ok) or "/Content/Content/" in en:
+                    bad_mount.append(rel)
+                break
+    if bad_mount:
+        for rel in sorted(set(bad_mount)):
+            warn("неверная точка монтирования для: " + rel)
+        warn("Ожидается префикс %s — см. reports/pak_list_mod.txt" % mount_ok)
+        die("Проверка не пройдена.")
     if missing:
         for rel in missing:
             warn("в .pak нет файла: " + rel)
+        msg("Первые записи листинга .pak (для диагностики):")
+        for en in entries[:12]:
+            msg("  " + en)
         die("Проверка не пройдена.")
-    msg("[ok] Все %d изменённых ассетов присутствуют в .pak." % len(expected))
+    msg("[ok] Все %d изменённых ассетов присутствуют в .pak "
+        "(монтирование корректно)." % len(expected))
     msg("Проверка пройдена. Устанавливайте: python hardball.py install")
 
 
