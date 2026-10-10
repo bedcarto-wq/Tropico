@@ -40,7 +40,7 @@ MOD_ID = "HardballPolitics"
 MOD_TITLE = "Hardball Politics — Политика без поблажек"
 # Версия печатается в статусе, отчётах и логах: по ней сразу видно, что
 # запущена свежая версия скрипта, а не старая копия.
-SCRIPT_VERSION = "v1.11 (10.10.2026)"
+SCRIPT_VERSION = "v1.12 (10.10.2026)"
 MOD_PAK_NAME = "z_HardballPolitics.pak"
 
 DEFAULT_CONFIG = {

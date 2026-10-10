@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Hardball Politics v1.11 - Tropico 6 Mod Builder
+title Hardball Politics v1.12 - Tropico 6 Mod Builder
 set "HB0=%~f0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$raw=[IO.File]::ReadAllText($env:HB0,[Text.Encoding]::UTF8); $m=('#'+'::PS1PAYLOAD::'); $global:HardballAppDir=Split-Path -Parent $env:HB0; $i=$raw.IndexOf($m,[System.StringComparison]::Ordinal); if($i -lt 0){throw 'payload not found'}; Invoke-Expression $raw.Substring($i+$m.Length)"
 if errorlevel 1 pause
@@ -27,7 +27,7 @@ $script:ModId = 'HardballPolitics'
 $script:ModTitle = 'Hardball Politics — Политика без поблажек'
 # Версия видна в меню, статусе и каждом отчёте: по ней сразу понятно,
 # что запущен свежий файл bat, а не старая копия из загрузок.
-$script:ScriptVersion = 'v1.11 (10.10.2026)'
+$script:ScriptVersion = 'v1.12 (10.10.2026)'
 $script:ModPakName = 'z_HardballPolitics.pak'
 $script:WorkDir = Join-Path $script:AppDir 'work'
 $script:ToolsDir = Join-Path $script:AppDir 'tools'
@@ -503,8 +503,16 @@ function Invoke-ToolRun([string]$exe, [string[]]$argList) {
     try {
         $quoted = @()
         foreach ($a in $argList) { $quoted += ('"' + ([string]$a -replace '"', '\"') + '"') }
-        $p = Start-Process -FilePath $exe -ArgumentList $quoted -PassThru -Wait -NoNewWindow `
-                -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        # ВАЖНО: в Windows PowerShell 5.1 пустой массив в -ArgumentList
+        # нарушает ValidateNotNullOrEmpty («The argument is null, empty...»),
+        # поэтому при пустом списке параметр не передаём вовсе.
+        if ($quoted.Count -gt 0) {
+            $p = Start-Process -FilePath $exe -ArgumentList $quoted -PassThru -Wait -NoNewWindow `
+                    -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        } else {
+            $p = Start-Process -FilePath $exe -PassThru -Wait -NoNewWindow `
+                    -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        }
         $res.Started = $true
         $res.ExitCode = $p.ExitCode
     } catch {
