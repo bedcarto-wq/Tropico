@@ -19,7 +19,7 @@ $script:ModId = 'HardballPolitics'
 $script:ModTitle = 'Hardball Politics — Политика без поблажек'
 # Версия видна в меню, статусе и каждом отчёте: по ней сразу понятно,
 # что запущен свежий файл bat, а не старая копия из загрузок.
-$script:ScriptVersion = 'v1.12 (10.10.2026)'
+$script:ScriptVersion = 'v1.13 (10.10.2026)'
 $script:ModPakName = 'z_HardballPolitics.pak'
 $script:WorkDir = Join-Path $script:AppDir 'work'
 $script:ToolsDir = Join-Path $script:AppDir 'tools'
@@ -279,7 +279,10 @@ function Test-JDict($o) {
 function Get-JProp($o, [string]$k) {
     if ($null -eq $o) { return $null }
     if ($o -is [System.Collections.IDictionary]) {
-        if ($o.Contains($k)) { return $o[$k] }
+        # ВАЖНО: Contains у Dictionary<,> — явная реализация интерфейса, её
+        # НЕ видит binder Windows PowerShell 5.1 ("Cannot find an overload
+        # for 'Contains'"). Используем публичный метод ContainsKey.
+        if ($o.ContainsKey($k)) { return $o[$k] }
         return $null
     }
     $p = $o.PSObject.Properties[$k]
@@ -289,7 +292,8 @@ function Get-JProp($o, [string]$k) {
 
 function Test-JProp($o, [string]$k) {
     if ($null -eq $o) { return $false }
-    if ($o -is [System.Collections.IDictionary]) { return $o.Contains($k) }
+    # Аналогично Get-JProp: только публичный ContainsKey, не Contains.
+    if ($o -is [System.Collections.IDictionary]) { return [bool]$o.ContainsKey($k) }
     return ($null -ne $o.PSObject.Properties[$k])
 }
 
@@ -300,7 +304,12 @@ function Set-JProp($o, [string]$k, $v) {
 
 function Get-JEntries($o) {
     if ($o -is [System.Collections.IDictionary]) {
-        foreach ($e in $o.GetEnumerator()) { ,@{ Key = $e.Key; Value = $e.Value } }
+        # Нельзя ни вызывать GetEnumerator (Dictionary<,> прячет его как
+        # явную реализацию интерфейса — PS 5.1 не находит метод), ни
+        # перебирать сам словарь (foreach по IDictionary отдаёт словарь
+        # ОДНИМ элементом, а не перечислением). Поэтому перебираем
+        # коллекцию ключей и берём значения индексатором.
+        foreach ($k in @($o.Keys)) { ,@{ Key = $k; Value = $o[$k] } }
     } else {
         foreach ($p in $o.PSObject.Properties) { ,@{ Key = $p.Name; Value = $p.Value } }
     }
@@ -337,7 +346,9 @@ function Get-AllNodes($Obj, $Path = @()) {
             $Path = @($Path + $name)
             ,($Obj, $Path)
         }
-        foreach ($e in (Get-JEntries $Obj)) { Get-AllNodes $e.Value $Path }
+        # @( ) вокруг вызова: в PS 5.1 foreach по $null делает одну итерацию
+        # с $null внутри (в PS 7 — ноль), пустой результат должен оставаться пустым.
+        foreach ($e in @(Get-JEntries $Obj)) { Get-AllNodes $e.Value $Path }
     }
 }
 
@@ -351,7 +362,7 @@ function Get-Config {
     if (Test-Path -LiteralPath $script:ConfigPath) {
         try {
             $loaded = ConvertFrom-JsonText (Read-Text $script:ConfigPath)
-            foreach ($e in (Get-JEntries $loaded)) { $cfg[$e.Key] = $e.Value }
+            foreach ($e in @(Get-JEntries $loaded)) { $cfg[$e.Key] = $e.Value }
         } catch { }
     }
     return $cfg
@@ -960,7 +971,7 @@ function Get-Recipe {
 
 function Get-RulesForAsset([object]$recipe, [string]$relContentPath) {
     $out = @()
-    foreach ($rule in (Get-JProp $recipe 'rules')) {
+    foreach ($rule in @(Get-JProp $recipe 'rules')) {
         $glob = [string](Get-JProp $rule 'asset_glob')
         if ([regex]::IsMatch($relContentPath, ('^(' + $glob + ')$'))) { $out += $rule }
     }
@@ -1027,7 +1038,7 @@ function Get-RoundtripMap([string]$modUasset) {
     Invoke-ToJson $modUasset $tmpJson
     $data = ConvertFrom-JsonText (Read-Text $tmpJson)
     $actual = @{}
-    foreach ($pair in (Get-AllNodes (Get-JProp $data 'Exports'))) {
+    foreach ($pair in @(Get-AllNodes (Get-JProp $data 'Exports'))) {
         $node = $pair[0]; $pathArr = $pair[1]
         $val = Get-JProp $node 'Value'
         if (Test-Number $val) {
@@ -1116,7 +1127,7 @@ function Invoke-Patch {
             $data = ConvertFrom-JsonText (Read-Text $jpath)
 
             $changes = @()
-            foreach ($pair in (Get-AllNodes (Get-JProp $data 'Exports'))) {
+            foreach ($pair in @(Get-AllNodes (Get-JProp $data 'Exports'))) {
                 $node = $pair[0]; $pathArr = $pair[1]
                 $pathStr = ($pathArr -join ' / ')
                 foreach ($rule in $rules) {
@@ -1304,7 +1315,7 @@ function Invoke-Scan {
             Invoke-ToJson ([string]$asset.Path) $jpath
             $countFiles++
             $data = ConvertFrom-JsonText (Read-Text $jpath)
-            foreach ($pair in (Get-AllNodes (Get-JProp $data 'Exports'))) {
+            foreach ($pair in @(Get-AllNodes (Get-JProp $data 'Exports'))) {
                 $node = $pair[0]; $pathArr = $pair[1]
                 $val = Get-JProp $node 'Value'
                 if (Test-Number $val) {
