@@ -40,7 +40,7 @@ MOD_ID = "HardballPolitics"
 MOD_TITLE = "Hardball Politics — Политика без поблажек"
 # Версия печатается в статусе, отчётах и логах: по ней сразу видно, что
 # запущена свежая версия скрипта, а не старая копия.
-SCRIPT_VERSION = "v1.9 (10.10.2026)"
+SCRIPT_VERSION = "v1.10 (10.10.2026)"
 MOD_PAK_NAME = "z_HardballPolitics.pak"
 
 DEFAULT_CONFIG = {
@@ -122,6 +122,19 @@ def find_game_root(cfg):
     for c in candidates:
         if os.path.isdir(os.path.join(c, "Tropico6", "Content", "Paks")):
             return c
+    # Перебор корней всех реально существующих дисков (нестандартные
+    # расположения вроде C:\Tropico 6).
+    try:
+        import string
+        for letter in string.ascii_uppercase:
+            drv = letter + ":\\"
+            if os.path.isdir(drv):
+                for sub in ("Tropico 6", r"Games\Tropico 6"):
+                    c = os.path.join(drv, sub)
+                    if os.path.isdir(os.path.join(c, "Tropico6", "Content", "Paks")):
+                        return c
+    except OSError:
+        pass
     return ""
 
 

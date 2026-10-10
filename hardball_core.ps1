@@ -19,7 +19,7 @@ $script:ModId = 'HardballPolitics'
 $script:ModTitle = 'Hardball Politics — Политика без поблажек'
 # Версия видна в меню, статусе и каждом отчёте: по ней сразу понятно,
 # что запущен свежий файл bat, а не старая копия из загрузок.
-$script:ScriptVersion = 'v1.9 (10.10.2026)'
+$script:ScriptVersion = 'v1.10 (10.10.2026)'
 $script:ModPakName = 'z_HardballPolitics.pak'
 $script:WorkDir = Join-Path $script:AppDir 'work'
 $script:ToolsDir = Join-Path $script:AppDir 'tools'
@@ -391,6 +391,8 @@ function Find-GameRoot([hashtable]$cfg) {
         # Steam/Epic-библиотек. Безопасно: диск существует по определению.
         try {
             $subs = @(
+                'Tropico 6',
+                'Games\Tropico 6',
                 'SteamLibrary\steamapps\common\Tropico 6',
                 'Steam\steamapps\common\Tropico 6',
                 'Program Files (x86)\Steam\steamapps\common\Tropico 6',
@@ -646,7 +648,7 @@ function Ensure-File([string]$path, [string[]]$urls, [int64]$minBytes, [string]$
 
 function Ensure-Tools {
     if (-not (Test-Path -LiteralPath $script:ToolsDir -PathType Container)) {
-        New-Item -ItemType Directory -Path $script:ToolsDir -Out-Null
+        New-Item -ItemType Directory -Path $script:ToolsDir -Force | Out-Null
     }
     foreach ($spec in $script:ToolDownloads) {
         $okMain = Ensure-File $spec.Path $spec.Urls 100000 $spec.Label

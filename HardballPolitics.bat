@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Hardball Politics v1.9 - Tropico 6 Mod Builder
+title Hardball Politics v1.10 - Tropico 6 Mod Builder
 set "HB0=%~f0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$raw=[IO.File]::ReadAllText($env:HB0,[Text.Encoding]::UTF8); $m=('#'+'::PS1PAYLOAD::'); $global:HardballAppDir=Split-Path -Parent $env:HB0; $i=$raw.IndexOf($m,[System.StringComparison]::Ordinal); if($i -lt 0){throw 'payload not found'}; Invoke-Expression $raw.Substring($i+$m.Length)"
 if errorlevel 1 pause
@@ -27,7 +27,7 @@ $script:ModId = 'HardballPolitics'
 $script:ModTitle = 'Hardball Politics — Политика без поблажек'
 # Версия видна в меню, статусе и каждом отчёте: по ней сразу понятно,
 # что запущен свежий файл bat, а не старая копия из загрузок.
-$script:ScriptVersion = 'v1.9 (10.10.2026)'
+$script:ScriptVersion = 'v1.10 (10.10.2026)'
 $script:ModPakName = 'z_HardballPolitics.pak'
 $script:WorkDir = Join-Path $script:AppDir 'work'
 $script:ToolsDir = Join-Path $script:AppDir 'tools'
@@ -399,6 +399,8 @@ function Find-GameRoot([hashtable]$cfg) {
         # Steam/Epic-библиотек. Безопасно: диск существует по определению.
         try {
             $subs = @(
+                'Tropico 6',
+                'Games\Tropico 6',
                 'SteamLibrary\steamapps\common\Tropico 6',
                 'Steam\steamapps\common\Tropico 6',
                 'Program Files (x86)\Steam\steamapps\common\Tropico 6',
@@ -654,7 +656,7 @@ function Ensure-File([string]$path, [string[]]$urls, [int64]$minBytes, [string]$
 
 function Ensure-Tools {
     if (-not (Test-Path -LiteralPath $script:ToolsDir -PathType Container)) {
-        New-Item -ItemType Directory -Path $script:ToolsDir -Out-Null
+        New-Item -ItemType Directory -Path $script:ToolsDir -Force | Out-Null
     }
     foreach ($spec in $script:ToolDownloads) {
         $okMain = Ensure-File $spec.Path $spec.Urls 100000 $spec.Label
