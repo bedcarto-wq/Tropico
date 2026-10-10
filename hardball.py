@@ -22,6 +22,8 @@ Hardball Politics («Политика без поблажек») — утили�
 
 import argparse
 import json
+from datetime import datetime
+import hashlib
 import math
 import os
 import re
@@ -36,6 +38,9 @@ RECIPE_PATH = os.path.join(APP_DIR, "recipe", "hardball_recipe.json")
 CONFIG_PATH = os.path.join(APP_DIR, "hardball_config.json")
 MOD_ID = "HardballPolitics"
 MOD_TITLE = "Hardball Politics — Политика без поблажек"
+# Версия печатается в статусе, отчётах и логах: по ней сразу видно, что
+# запущена свежая версия скрипта, а не старая копия.
+SCRIPT_VERSION = "v1.9 (10.10.2026)"
 MOD_PAK_NAME = "z_HardballPolitics.pak"
 
 DEFAULT_CONFIG = {
@@ -70,6 +75,10 @@ PATCH_TARGETS = [
     "Blueprints/Ultimatums/Factions/",
     "Blueprints/Demands/Factions/",
 ]
+
+
+def now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def msg(text=""):
@@ -137,7 +146,13 @@ def game_paks(cfg):
 
 def run_cmd(cmd, what=""):
     """Запуск внешнего инструмента с понятными сообщениями об ошибках."""
-    proc = subprocess.run(cmd, capture_output=True, text=True, shell=False)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, shell=False)
+    except OSError as e:
+        msg("")
+        msg('Не удалось запустить "%s": %s' % (cmd[0], e))
+        die("Проверьте антивирус и установите Microsoft Visual C++ 2015-2019 "
+            "Redistributable (x64): https://aka.ms/vs/16/release/VC_redist.x64.exe (%s)" % (what or cmd[0]))
     if proc.returncode != 0:
         msg("")
         msg("Команда: " + " ".join('"%s"' % c for c in cmd))
@@ -157,8 +172,8 @@ TOOL_DOWNLOADS = {
     "uassetgui_exe": {
         "label": "UAssetGUI (конвертер .uasset <-> JSON)",
         "urls": [
-            "https://github.com/atenfyr/UAssetGUI/releases/download/v1.1.0/UAssetGUI.exe",
             "https://raw.githubusercontent.com/zhuangchengfeng/Tropico6Mod_Agent/master/UAssetGUI.exe",
+            "https://github.com/atenfyr/UAssetGUI/releases/download/v1.1.0/UAssetGUI.exe",
         ],
     },
     "unrealpak_extract_exe": {
@@ -194,28 +209,109 @@ UP_DLLS = [
 UP_DLL_BASE = "https://raw.githubusercontent.com/zhuangchengfeng/Tropico6Mod_Agent/master/UnrealPakTool/"
 
 
+# Эталонный манифест компонентов UnrealPak (точный размер и SHA256 из источника).
+# Раньше проверялось только «файл существует и больше N байт» — из-за этого
+# старый/битой набор в папке tools считался годным, и extract молча давал 0 файлов.
+# Теперь файл с чужим размером или хешем заменяется на свежий автоматически.
+TOOL_INTEGRITY = {
+    "UnrealPak_4_25_3.exe":           (138208,   "83d40eb798a47f411a8d95bf2862eb6ee71eb36712910b0c4271c2b8a2e0a902"),
+    "UnrealPak-Core.dll":              (7380960, "6bdd74115774b383a800937d38e19347546380d0c3ceb5b777ccae8151bb5548"),
+    "UnrealPak-CoreUObject.dll":       (5988832, "b4eab4e64e9649db9d5ce2a63c65025da1509d71b6ea29c8ec99f0c9db27c98d"),
+    "UnrealPak-DerivedDataCache.dll":  (3695584, "f9549750a73f2ea1bbca7b0afd3d2c6088189d0f12fc5feb820f7905cf1c75e6"),
+    "UnrealPak-Json.dll":              (227808,  "6866cc12fd12df556673c55deb04b7e93d2d48e78a1820601824efe459019a60"),
+    "UnrealPak-PakFile.dll":           (376800,  "0f5999202a3a486ea017144f86e251387eef93192f101ecb42dee441efba32a6"),
+    "UnrealPak-PakFileUtilities.dll":  (422880,  "347e22e949c7c9215b329a811229c40992f050fbe13e4bd5660234031a33e754"),
+    "UnrealPak-Projects.dll":          (440800,  "e8e0d4096f1e4de5d3c833de452329e7ad40c1b950cdccbd7c15f2e7f570637c"),
+    "UnrealPak-Analytics.dll":         (64480,   "af8569b87fd4131dcc38e773e8108994bf142237aec2b949b0b75203613a227f"),
+    "UnrealPak-BuildSettings.dll":     (52704,   "0b26abc9ba450b447a4349995c6f61001a6c7fe351cf95c954aeff101947dfd0"),
+    "UnrealPak-RSA.dll":               (63968,   "4dc373e0bd3ec594a597b337af20079d7358ed809e59dd107d3710c40abf9cca"),
+    "UnrealPak-SSL.dll":               (2877600, "ea5deb539208be40c3c8658779cfef5c3a1628d642d0bcdc5f120ba1755a1d6a"),
+    "UnrealPak-TraceLog.dll":          (107168,  "7cb450dae71ce31e627cd7e4beab1bb5054d2bae574da8cf13ac4d9b61567957"),
+    "UnrealPak.modules":               (537,     "d765228ff12a593bf853400b761e32559c10ae42c4c5606e112a0ff14e644f89"),
+    "UnrealPak_UE4_20.exe":            (11452816, "8cc2322d844f2c59741b1eee4bd50ae2fff91cbc1db055dd9c04132980d9e35c"),
+}
+
+
+def file_integrity_ok(path, name):
+    m = TOOL_INTEGRITY.get(name)
+    if not m:
+        return None  # файла нет в манифесте — целостность не проверяем
+    if not os.path.isfile(path):
+        return False
+    size, sha = m
+    if os.path.getsize(path) != size:
+        return False
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest() == sha
+    except OSError:
+        return False
+
+
+def ensure_file(path, urls, min_bytes, label=""):
+    """Проверяет один файл инструментов; при несовпадении с эталоном заменяет."""
+    name = os.path.basename(path)
+    in_manifest = name in TOOL_INTEGRITY
+    if in_manifest:
+        if file_integrity_ok(path, name):
+            return True
+        if os.path.isfile(path):
+            msg("  [fix] %s не совпадает с эталоном (размер/хеш) — заменяю" % name)
+            os.remove(path)
+    else:
+        if os.path.isfile(path) and os.path.getsize(path) > min_bytes:
+            return True
+    for url in urls:
+        try:
+            download(url, path)
+            if in_manifest:
+                if file_integrity_ok(path, name):
+                    return True
+                msg("  [fix] скачанный %s не совпал с эталоном — удаляю" % name)
+                os.remove(path)
+            else:
+                if os.path.getsize(path) > min_bytes:
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+    return False
+
+
 def ensure_unrealpak_dlls(cfg):
-    """Докачивает компоненты UnrealPak 4.25.3 и проверяет, что он запускается."""
+    """Проверяет компоненты UnrealPak 4.25.3 по манифесту и что exe запускается."""
     tool_dir = os.path.dirname(cfg["unrealpak_extract_exe"])
     for name in UP_DLLS:
         dest = os.path.join(tool_dir, name)
         min_bytes = 100 if name == "UnrealPak.modules" else 50_000
-        if os.path.isfile(dest) and os.path.getsize(dest) > min_bytes:
-            continue
-        try:
-            download(UP_DLL_BASE + name, dest)
-        except Exception as e:  # noqa: BLE001
-            warn("Не удалось скачать компонент %s (%s). Положите файл вручную в: %s"
-                 % (name, e, dest))
-    # Проба: UnrealPak обязан печатать хотя бы справку; пустой вывод = не запускается.
+        if not ensure_file(dest, [UP_DLL_BASE + name], min_bytes):
+            warn("Не удалось получить компонент %s. Положите файл вручную в: %s"
+                 % (name, dest))
+    # Проба запуска: отказ запуска (нет DLL / антивирус) ловится отдельно
+    # от «пустого вывода», чтобы не маскировать неработающий инструмент.
     exe = cfg["unrealpak_extract_exe"]
     if os.path.isfile(exe):
-        proc = subprocess.run([exe], capture_output=True, shell=False)
+        try:
+            proc = subprocess.run([exe], capture_output=True, shell=False)
+        except OSError as e:
+            die("UnrealPak не запускается: %s. Все 13 компонентов уже проверены "
+                "по хешу, поэтому причина почти наверняка в отсутствии Microsoft "
+                "Visual C++ 2015-2019 Redistributable (x64) или в антивирусе. "
+                "Установите https://aka.ms/vs/16/release/VC_redist.x64.exe и "
+                "выполните setup заново." % e)
         if not (proc.stdout.strip() or proc.stderr.strip()):
-            die("UnrealPak не запускается (пустой вывод). Скорее всего, не хватает "
-                "DLL-компонентов рядом с %s или не установлен Microsoft Visual C++ "
-                "2015-2019 Redistributable (x64). Удалите папку tools целиком и "
-                "выполните setup заново." % exe)
+            die("UnrealPak запустился, но ничего не печатает (код возврата %d). "
+                "Проверьте антивирус (карантин) и сообщите об этом." % proc.returncode)
+    pack = cfg["unrealpak_pack_exe"]
+    if os.path.isfile(pack):
+        try:
+            subprocess.run([pack], capture_output=True, shell=False)
+        except OSError as e:
+            die("UnrealPak 4.20 (упаковщик) не запускается: %s. Установите "
+                "https://aka.ms/vs/16/release/VC_redist.x64.exe и выполните "
+                "setup заново." % e)
 
 
 def cmd_setup(args, cfg):
@@ -226,22 +322,11 @@ def cmd_setup(args, cfg):
 
     for key, spec in TOOL_DOWNLOADS.items():
         dest = cfg[key]
-        if os.path.isfile(dest) and os.path.getsize(dest) > 100_000:
-            msg("  [ok] %s уже на месте" % spec["label"])
-            continue
-        last_err = None
-        for url in spec["urls"]:
-            try:
-                download(url, dest)
-                if os.path.getsize(dest) > 100_000:
-                    msg("  [ok] загружен: %s" % spec["label"])
-                    break
-            except Exception as e:  # noqa: BLE001
-                last_err = e
+        if ensure_file(dest, spec["urls"], 100_000, spec["label"]):
+            msg("  [ok] %s проверен и на месте" % spec["label"])
         else:
-            warn("Не удалось скачать %s (%s). Положите файл вручную в %s "
-                 "или укажите путь в hardball_config.json." %
-                 (spec["label"], last_err, dest))
+            warn("Не удалось проверить/скачать %s. Положите файл вручную в %s "
+                 "или укажите путь в hardball_config.json." % (spec["label"], dest))
 
     # Компоненты UnrealPak 4.25.3 (12 DLL) + проверка запуска
     ensure_unrealpak_dlls(cfg)
@@ -300,25 +385,31 @@ def cmd_extract(args, cfg):
         shutil.rmtree(orig_dir, ignore_errors=True)
     os.makedirs(orig_dir, exist_ok=True)
 
-    total = 0
-    # UnrealPak извлекает файлы с путём монтирования ../../../Tropico6/Content/...,
-    # то есть НАД папкой назначения. Поэтому dest делаем на три уровня внутри orig:
-    # при любом варианте поведения UnrealPak файлы окажутся внутри orig/ и будут найдены.
-    tmp_dir = os.path.join(orig_dir, "e1", "e2", "e3")
-    seen = set()
-    for pattern in EXTRACT_FILTERS:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        os.makedirs(tmp_dir, exist_ok=True)
-        got = 0
+    # --- Диагностика: список .pak, лог распаковки с кодами возврата ---
+    reports_dir = os.path.join(cfg["work_dir"], DIR_REPORTS)
+    os.makedirs(reports_dir, exist_ok=True)
+    dbg_path = os.path.join(reports_dir, "extract_debug.txt")
+    with open(dbg_path, "w", encoding="utf-8") as f:
+        f.write("Extract log: %s\nСкрипт: %s\n" % (now_str(), SCRIPT_VERSION))
         for pak in pak_files:
-            name = os.path.basename(pak)
-            if "_VO" in name or "vo_" in name.lower():
-                continue  # паки локализации/озвучки не нужны
-            subprocess.run(
-                [extract_exe, pak, "-Extract", tmp_dir, "-Filter=" + pattern],
-                capture_output=True, text=True, shell=False)
-            # ненулевой код возврата нормален: фильтр мог ничего не найти в этом паке
+            f.write("pak: %s (%d MB)\n" % (pak, os.path.getsize(pak) // (1024 * 1024)))
+
+    def dbg(text):
+        with open(dbg_path, "a", encoding="utf-8") as f:
+            f.write(text + "\n")
+
+    def run_tool(cmd):
+        """Возвращает (started, exit_code, out, err, start_error)."""
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, shell=False)
+        except OSError as e:
+            return (False, None, "", "", str(e))
+        out = (proc.stdout or "") + (proc.stderr or "")
+        return (True, proc.returncode, proc.stdout or "", proc.stderr or "", "")
+
+    def copy_extracted(orig_dir, seen):
         content_root = os.path.join(orig_dir, "Tropico6", "Content")
+        got = 0
         for root, _dirs, files in os.walk(orig_dir):
             for f in files:
                 full = os.path.join(root, f)
@@ -335,13 +426,119 @@ def cmd_extract(args, cfg):
                     continue  # файл уже лежит на нужном месте
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(full, dst)
-        # временные каталоги удаляем, итог лежит в orig/Tropico6/Content/...
         shutil.rmtree(os.path.join(orig_dir, "e1"), ignore_errors=True)
+        return got
+
+    total = 0
+    run_failures = 0
+    # UnrealPak извлекает файлы с путём монтирования ../../../Tropico6/Content/...,
+    # то есть НАД папкой назначения. Поэтому dest делаем на три уровня внутри orig:
+    # при любом варианте поведения UnrealPak файлы окажутся внутри orig/ и будут найдены.
+    tmp_dir = os.path.join(orig_dir, "e1", "e2", "e3")
+    seen = set()
+    msg("Извлечение политических ассетов из игровых .pak…")
+    for pak in pak_files:
+        msg("  pak: %s (%d МБ)" %
+            (os.path.basename(pak), os.path.getsize(pak) // (1024 * 1024)))
+    for pattern in EXTRACT_FILTERS:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        os.makedirs(tmp_dir, exist_ok=True)
+        for pak in pak_files:
+            name = os.path.basename(pak)
+            if "_VO" in name or "vo_" in name.lower():
+                continue  # паки локализации/озвучки не нужны
+            started, code, out, err_text, start_error = run_tool(
+                [extract_exe, pak, "-Extract", tmp_dir, "-Filter=" + pattern])
+            status = ("код возврата %s" % code) if started else ("ОТКАЗ ЗАПУСКА: %s" % start_error)
+            dbg("=== %s :: %s :: %s ===\n%s" % (name, pattern, status, out + err_text))
+            if not started:
+                run_failures += 1
+            # ненулевой код возврата нормален: фильтр мог ничего не найти в этом паке
+        got = copy_extracted(orig_dir, seen)
         msg("  фильтр %-22s -> %d файлов" % (pattern, got))
         total += got
 
     msg("")
     msg("Итого извлечено файлов: %d" % total)
+    if total == 0 and run_failures:
+        msg("")
+        msg("ВНИМАНИЕ: UnrealPak %d раз отказался запускаться при извлечении. "
+            "Это не «файлы не найдены», а неработающий инструмент — см. extract_debug.txt."
+            % run_failures)
+
+    if total == 0:
+        # --- Запасной путь: оглавление pak (-List) и извлечение по точным именам ---
+        msg("")
+        msg("Прямые фильтры ничего не дали. Читаю оглавления pak-ов (-List)…")
+        plain = [p.strip("*").lower() for p in EXTRACT_FILTERS]
+        all_matches = {}  # точное имя -> pak
+        entry_re = re.compile(r"[\w\-./\\]+\.(?:uasset|uexp|ubulk|umap)")
+        for pak in pak_files:
+            name = os.path.basename(pak)
+            if "_VO" in name or "vo_" in name.lower():
+                continue
+            started, code, out, err_text, start_error = run_tool(
+                [extract_exe, pak, "-List"])
+            if not started:
+                dbg("--- -List :: %s :: ОТКАЗ ЗАПУСКА: %s" % (name, start_error))
+                run_failures += 1
+                continue
+            list_path = os.path.join(
+                reports_dir, "pak_list_%s.txt" % name[:-len(".pak")])
+            with open(list_path, "w", encoding="utf-8") as f:
+                f.write(out)
+            dbg("--- -List :: %s :: код %s :: полная распечатка сохранена: %s"
+                % (name, code, list_path))
+            entries = set()
+            n_total = 0
+            for m in entry_re.finditer(out):
+                n_total += 1
+                e = m.group(0).replace("\\", "/")
+                low = e.lower()
+                for p in plain:
+                    if p in low:
+                        entries.add(e)
+                        break
+            for e in entries:
+                all_matches[e] = pak
+            msg("  %s: записей ассетов: %d, подходит под наши шаблоны: %d"
+                % (name, n_total, len(entries)))
+        if all_matches:
+            if len(all_matches) > 500:
+                msg("  (совпадений слишком много — извлеку первые 500)")
+            msg("  Извлекаю по точным именам: %d файлов…" % len(all_matches))
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            os.makedirs(tmp_dir, exist_ok=True)
+            for i, e in enumerate(sorted(all_matches)):
+                if i >= 500:
+                    break
+                started, code, out, err_text, start_error = run_tool(
+                    [extract_exe, all_matches[e], "-Extract", tmp_dir, "-Filter=" + e])
+                status = ("код %s" % code) if started else ("ОТКАЗ: %s" % start_error)
+                dbg("--- точное имя :: %s :: %s\n%s" % (e, status, out + err_text))
+                if not started:
+                    run_failures += 1
+            total = copy_extracted(orig_dir, set())
+            msg("  Извлечено по точным именам: %d файлов" % total)
+
+    if total == 0:
+        msg("")
+        msg("---- Диагностика (конец лога UnrealPak) ----")
+        try:
+            with open(dbg_path, encoding="utf-8") as f:
+                tail = f.read().splitlines()[-40:]
+            for line in tail:
+                msg("  " + line)
+        except OSError:
+            pass
+        msg("Полный лог: " + dbg_path)
+        msg("Оглавления paks: " + os.path.join(reports_dir, "pak_list_*.txt"))
+        die("Не извлечено ни одного файла. Пришлите extract_debug.txt и "
+            "pak_list_*.txt из папки reports: по ним точно видно, запускался ли "
+            "UnrealPak, читается ли pak и есть ли в вашей версии игры (1.29) "
+            "нужные ассеты.")
+
+    msg("")
     msg("Следующий шаг: python hardball.py scan  (отчёт о параметрах)")
     msg("             или python hardball.py patch (применить правки сразу)")
 
@@ -501,6 +698,7 @@ def cmd_scan(args, cfg):
                     report_lines.append("%s :: %s = %s" % (rel, path_str(path), val))
     report = os.path.join(cfg["work_dir"], DIR_REPORTS, "politics_scan.txt")
     with open(report, "w", encoding="utf-8") as f:
+        f.write("# Отчёт scan — %s — скрипт %s\n" % (now_str(), SCRIPT_VERSION))
         f.write("\n".join(report_lines))
     msg("Просмотрено ассетов: %d" % count_files)
     msg("Числовых параметров: %d" % len(report_lines))
@@ -780,6 +978,7 @@ def cmd_verify(args, cfg):
 def cmd_status(args, cfg):
     work = cfg["work_dir"]
     msg(MOD_TITLE)
+    msg("Версия скрипта: " + SCRIPT_VERSION)
     msg("")
     game = find_game_root(cfg)
     msg("Игра:            %s" % (game or "не найдена (python hardball.py set-game)"))

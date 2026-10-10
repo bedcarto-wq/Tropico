@@ -17,6 +17,9 @@ $script:IsWin = ($null -eq $PSVersionTable.Platform) -or ($PSVersionTable.Platfo
 
 $script:ModId = 'HardballPolitics'
 $script:ModTitle = 'Hardball Politics — Политика без поблажек'
+# Версия видна в меню, статусе и каждом отчёте: по ней сразу понятно,
+# что запущен свежий файл bat, а не старая копия из загрузок.
+$script:ScriptVersion = 'v1.9 (10.10.2026)'
 $script:ModPakName = 'z_HardballPolitics.pak'
 $script:WorkDir = Join-Path $script:AppDir 'work'
 $script:ToolsDir = Join-Path $script:AppDir 'tools'
@@ -478,14 +481,46 @@ function Get-GamePaks([hashtable]$cfg) {
 # ---------------------------------------------------------------------------
 # Внешние инструменты
 # ---------------------------------------------------------------------------
+# Надёжный запуск внешнего exe через Start-Process + файлы-редиректы.
+# В отличие от "& exe 2>&1" (где текст ошибки PowerShell смешивается с выводом
+# и маскирует молчание exe) здесь отдельно фиксируются: сам факт запуска,
+# текст ошибки запуска (нет DLL / заблокирован антивирусом), код возврата,
+# stdout и stderr.
+function Invoke-ToolRun([string]$exe, [string[]]$argList) {
+    $res = @{ Started = $false; ExitCode = $null; Out = ''; Err = ''; StartError = '' }
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $quoted = @()
+        foreach ($a in $argList) { $quoted += ('"' + ([string]$a -replace '"', '\"') + '"') }
+        $p = Start-Process -FilePath $exe -ArgumentList $quoted -PassThru -Wait -NoNewWindow `
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $res.Started = $true
+        $res.ExitCode = $p.ExitCode
+    } catch {
+        $res.StartError = [string]$_.Exception.Message
+    }
+    try { $res.Out = [System.IO.File]::ReadAllText($outFile) } catch {}
+    try { $res.Err = [System.IO.File]::ReadAllText($errFile) } catch {}
+    try { Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue } catch {}
+    return $res
+}
+
 function Invoke-Tool([string]$exe, [string[]]$argList, [string]$what = '') {
     if (-not (Test-Path -LiteralPath $exe)) {
         Die ('Инструмент не найден: ' + $exe + ' (выберите пункт 1 — он скачается автоматически)')
     }
-    $out = (& $exe @argList 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) {
+    $r = Invoke-ToolRun $exe $argList
+    $out = ($r.Out + $r.Err)
+    if (-not $r.Started) {
+        Msg ''
+        Msg ('Не удалось запустить "' + $exe + '": ' + $r.StartError)
+        Die ('Проверьте антивирус и установите Microsoft Visual C++ 2015-2019 Redistributable (x64): https://aka.ms/vs/16/release/VC_redist.x64.exe (' + $what + ')')
+    }
+    if ($null -eq $r.ExitCode -or $r.ExitCode -ne 0) {
         Msg ''
         Msg ('Команда: "' + $exe + '" ' + ($argList -join ' '))
+        Msg ('Код возврата: ' + $r.ExitCode)
         if ($out -and $out.Trim()) { Msg ($out.Trim().Substring([Math]::Max(0, $out.Trim().Length - 3000))) }
         Die ('Не удалось выполнить: ' + $what)
     }
@@ -508,8 +543,8 @@ $script:ToolDownloads = @(
         Key = 'uassetgui'; Label = 'UAssetGUI (конвертер .uasset <-> JSON)';
         Path = Join-Path $script:ToolsDir 'UAssetGUI.exe';
         Urls = @(
-            'https://github.com/atenfyr/UAssetGUI/releases/download/v1.1.0/UAssetGUI.exe',
-            'https://raw.githubusercontent.com/zhuangchengfeng/Tropico6Mod_Agent/master/UAssetGUI.exe'
+            'https://raw.githubusercontent.com/zhuangchengfeng/Tropico6Mod_Agent/master/UAssetGUI.exe',
+            'https://github.com/atenfyr/UAssetGUI/releases/download/v1.1.0/UAssetGUI.exe'
         )
     },
     @{
@@ -536,8 +571,41 @@ $script:ToolDownloads = @(
     }
 )
 
+# Эталонный манифест компонентов UnrealPak (точный размер и SHA256 из источника).
+# Раньше проверялось только «файл существует и больше N байт» — из-за этого
+# старый/битой набор в папке tools считался годным, и extract молча давал 0 файлов.
+# Теперь файл с чужим размером или хешем заменяется на свежий автоматически.
+$script:ToolIntegrity = @{
+    'UnrealPak_4_25_3.exe'          = @{ Size = 138208;   Sha256 = '83d40eb798a47f411a8d95bf2862eb6ee71eb36712910b0c4271c2b8a2e0a902' }
+    'UnrealPak-Core.dll'             = @{ Size = 7380960; Sha256 = '6bdd74115774b383a800937d38e19347546380d0c3ceb5b777ccae8151bb5548' }
+    'UnrealPak-CoreUObject.dll'      = @{ Size = 5988832; Sha256 = 'b4eab4e64e9649db9d5ce2a63c65025da1509d71b6ea29c8ec99f0c9db27c98d' }
+    'UnrealPak-DerivedDataCache.dll' = @{ Size = 3695584; Sha256 = 'f9549750a73f2ea1bbca7b0afd3d2c6088189d0f12fc5feb820f7905cf1c75e6' }
+    'UnrealPak-Json.dll'             = @{ Size = 227808;  Sha256 = '6866cc12fd12df556673c55deb04b7e93d2d48e78a1820601824efe459019a60' }
+    'UnrealPak-PakFile.dll'          = @{ Size = 376800;  Sha256 = '0f5999202a3a486ea017144f86e251387eef93192f101ecb42dee441efba32a6' }
+    'UnrealPak-PakFileUtilities.dll' = @{ Size = 422880;  Sha256 = '347e22e949c7c9215b329a811229c40992f050fbe13e4bd5660234031a33e754' }
+    'UnrealPak-Projects.dll'         = @{ Size = 440800;  Sha256 = 'e8e0d4096f1e4de5d3c833de452329e7ad40c1b950cdccbd7c15f2e7f570637c' }
+    'UnrealPak-Analytics.dll'        = @{ Size = 64480;   Sha256 = 'af8569b87fd4131dcc38e773e8108994bf142237aec2b949b0b75203613a227f' }
+    'UnrealPak-BuildSettings.dll'    = @{ Size = 52704;   Sha256 = '0b26abc9ba450b447a4349995c6f61001a6c7fe351cf95c954aeff101947dfd0' }
+    'UnrealPak-RSA.dll'              = @{ Size = 63968;   Sha256 = '4dc373e0bd3ec594a597b337af20079d7358ed809e59dd107d3710c40abf9cca' }
+    'UnrealPak-SSL.dll'              = @{ Size = 2877600; Sha256 = 'ea5deb539208be40c3c8658779cfef5c3a1628d642d0bcdc5f120ba1755a1d6a' }
+    'UnrealPak-TraceLog.dll'         = @{ Size = 107168;  Sha256 = '7cb450dae71ce31e627cd7e4beab1bb5054d2bae574da8cf13ac4d9b61567957' }
+    'UnrealPak.modules'              = @{ Size = 537;     Sha256 = 'd765228ff12a593bf853400b761e32559c10ae42c4c5606e112a0ff14e644f89' }
+    'UnrealPak_UE4_20.exe'           = @{ Size = 11452816; Sha256 = '8cc2322d844f2c59741b1eee4bd50ae2fff91cbc1db055dd9c04132980d9e35c' }
+}
+
 function Test-FileOk([string]$p, [int64]$minBytes) {
     return (Test-Path -LiteralPath $p -PathType Leaf) -and ((Get-Item -LiteralPath $p).Length -gt $minBytes)
+}
+
+function Test-ToolIntegrity([string]$path, [string]$name) {
+    $m = $script:ToolIntegrity[$name]
+    if ($null -eq $m) { return $true }   # файла нет в манифесте — обычная проверка его не касается
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    try {
+        if ((Get-Item -LiteralPath $path).Length -ne $m.Size) { return $false }
+        $h = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        return ($h -eq $m.Sha256)
+    } catch { return $false }
 }
 
 function Save-Url([string]$url, [string]$dest, [int64]$minBytes) {
@@ -549,51 +617,76 @@ function Save-Url([string]$url, [string]$dest, [int64]$minBytes) {
     return $false
 }
 
+# Проверяет один файл инструментов; при несовпадении с эталоном заменяет его.
+function Ensure-File([string]$path, [string[]]$urls, [int64]$minBytes, [string]$label) {
+    $name = [System.IO.Path]::GetFileName($path)
+    $inManifest = ($null -ne $script:ToolIntegrity[$name])
+    if ($inManifest) {
+        if (Test-ToolIntegrity $path $name) { return $true }
+        if (Test-Path -LiteralPath $path) {
+            Msg ('  [fix] ' + $name + ' не совпадает с эталоном (размер/хеш) — заменяю')
+            Remove-Item -LiteralPath $path -Force
+        }
+    } elseif (Test-FileOk $path $minBytes) {
+        return $true
+    }
+    foreach ($u in $urls) {
+        if (Save-Url $u $path $(if ($inManifest) { 100 } else { $minBytes })) {
+            if ($inManifest) {
+                if (Test-ToolIntegrity $path $name) { return $true }
+                Msg ('  [fix] скачанный ' + $name + ' не совпал с эталоном — удаляю')
+                Remove-Item -LiteralPath $path -Force
+            } else {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
 function Ensure-Tools {
     if (-not (Test-Path -LiteralPath $script:ToolsDir -PathType Container)) {
         New-Item -ItemType Directory -Path $script:ToolsDir -Out-Null
     }
     foreach ($spec in $script:ToolDownloads) {
-        $dest = $spec.Path
-        $mainOk = Test-FileOk $dest 100000
+        $okMain = Ensure-File $spec.Path $spec.Urls 100000 $spec.Label
         $depsOk = $true
+        $depCount = 0
         if ($spec.ContainsKey('Deps')) {
             foreach ($d in $spec.Deps) {
-                if (-not (Test-FileOk $d.Path $d.MinBytes)) {
-                    $got = $false
-                    foreach ($u in $d.Urls) {
-                        if (Save-Url $u $d.Path $d.MinBytes) { $got = $true; break }
-                    }
-                    if (-not $got) {
-                        $depsOk = $false
-                        Warn2 ('Не удалось скачать компонент ' + [System.IO.Path]::GetFileName($d.Path) + '. Положите файл вручную в: ' + $d.Path)
-                    }
+                $depCount++
+                if (-not (Ensure-File $d.Path $d.Urls $d.MinBytes $d.Path)) {
+                    $depsOk = $false
+                    Warn2 ('Не удалось получить компонент ' + [System.IO.Path]::GetFileName($d.Path) + '. Положите файл вручную в: ' + $d.Path)
                 }
             }
         }
-        $suffix = ''
-        if ($spec.ContainsKey('Deps')) { $suffix = ' (+13 компонентов)' }
-        if ($mainOk -and $depsOk) {
+        if ($okMain -and $depsOk) {
+            $suffix = ''
+            if ($depCount -gt 0) { $suffix = (' (+' + $depCount + ' компонентов, проверены по хешу)') }
             Msg ('  [ok] ' + $spec.Label + ' уже на месте' + $suffix)
             continue
         }
-        $done = $false
-        foreach ($url in $spec.Urls) {
-            if (Save-Url $url $dest 100000) { $done = $true; break }
-        }
-        if ($done -and $depsOk) {
-            Msg ('  [ok] загружен: ' + $spec.Label + $suffix)
-        } else {
-            Warn2 ('Не удалось скачать ' + $spec.Label + '. Положите файл вручную в: ' + $dest)
-        }
+        Warn2 ('Не удалось проверить/скачать ' + $spec.Label + '. Положите файл вручную в: ' + $spec.Path)
     }
-    # Проба: UnrealPak обязан печатать в консоль хотя бы справку.
-    # Пустой вывод = процесс не запускается (не хватает DLL или VC++ runtime).
+    # Проба запуска: раньше она делалась через "& exe 2>&1", и текст ошибки
+    # PowerShell сам попадал в «вывод», из-за чего битый exe выглядел рабочим.
+    # Теперь запускаем через Start-Process: отказ запуска ловится отдельно.
     $extExe = Join-Path $script:ToolsDir 'UnrealPak_4_25_3.exe'
     if (Test-FileOk $extExe 100000) {
-        $probe = (& $extExe 2>&1 | Out-String)
-        if (-not $probe -or -not $probe.Trim()) {
-            Die ('UnrealPak не запускается (пустой вывод). Скорее всего, не хватает DLL-компонентов рядом с UnrealPak_4_25_3.exe или не установлен Microsoft Visual C++ 2015-2019 Redistributable (x64). Удалите папку tools целиком и запустите пункт 1 заново.')
+        $r = Invoke-ToolRun $extExe @()
+        if (-not $r.Started) {
+            Die ('UnrealPak не запускается: ' + $r.StartError + ' Все 13 компонентов уже проверены по хешу, поэтому причина почти наверняка в отсутствии Microsoft Visual C++ 2015-2019 Redistributable (x64) или в антивирусе. Установите https://aka.ms/vs/16/release/VC_redist.x64.exe и запустите пункт 1 заново.')
+        }
+        if (-not (($r.Out + $r.Err).Trim())) {
+            Die ('UnrealPak запустился, но ничего не печатает (код возврата ' + $r.ExitCode + '). Проверьте антивирус (карантин) и сообщите об этом.')
+        }
+    }
+    $packExe = Join-Path $script:ToolsDir 'UnrealPak_UE4_20.exe'
+    if (Test-FileOk $packExe 100000) {
+        $r2 = Invoke-ToolRun $packExe @()
+        if (-not $r2.Started) {
+            Die ('UnrealPak 4.20 (упаковщик) не запускается: ' + $r2.StartError + ' Установите https://aka.ms/vs/16/release/VC_redist.x64.exe и запустите пункт 1 заново.')
         }
     }
 }
@@ -653,7 +746,9 @@ function Invoke-Extract([hashtable]$cfg) {
     }
     $dbgPath = Join-Path $reportsDir 'extract_debug.txt'
     if (Test-Path -LiteralPath $dbgPath) { Remove-Item -LiteralPath $dbgPath -Force }
-    [System.IO.File]::WriteAllText($dbgPath, ('Extract log: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "`r`n"), $Utf8NoBom)
+    [System.IO.File]::WriteAllText($dbgPath,
+        ('Extract log: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "`r`n" +
+         'Скрипт: ' + $script:ScriptVersion + "`r`n"), $Utf8NoBom)
     $paksDir = Get-PaksDir $cfg
     foreach ($pak in $pakFiles) {
         $sz = [Math]::Round((Get-Item -LiteralPath $pak).Length / 1MB)
@@ -675,38 +770,82 @@ function Invoke-Extract([hashtable]$cfg) {
     $tmpDir = Join-Sub $origDir 'e1/e2/e3'
     $total = 0
     $seen = @{}
+    $runFailures = 0
     foreach ($pattern in $script:ExtractFilters) {
         if (Test-Path -LiteralPath $tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force }
         New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
-        $got = 0
         foreach ($pak in $pakFiles) {
             $name = [System.IO.Path]::GetFileName($pak)
             if ($name.Contains('_VO') -or $name.ToLower().Contains('vo_')) { continue }
-            $outText = (& $extractExe $pak '-Extract' $tmpDir ("-Filter=" + $pattern) 2>&1 | Out-String)
-            [System.IO.File]::AppendAllText($dbgPath, ('=== ' + $name + ' :: ' + $pattern + ' ===' + "`r`n" + $outText + "`r`n"), $Utf8NoBom)
+            $r = Invoke-ToolRun $extractExe @($pak, '-Extract', $tmpDir, ('-Filter=' + $pattern))
+            $status = $(if ($r.Started) { ('код возврата ' + $r.ExitCode) } else { ('ОТКАЗ ЗАПУСКА: ' + $r.StartError) })
+            [System.IO.File]::AppendAllText($dbgPath, ('=== ' + $name + ' :: ' + $pattern + ' :: ' + $status + ' ===' + "`r`n" + ($r.Out + $r.Err) + "`r`n"), $Utf8NoBom)
+            if (-not $r.Started) { $runFailures++ }
             # ненулевой код возврата здесь нормален: фильтр мог ничего не найти в этом паке
         }
-        $contentRoot = Join-Sub $origDir 'Tropico6/Content'
-        foreach ($f in (Get-ChildItem -LiteralPath $origDir -Recurse -File -ErrorAction SilentlyContinue)) {
-            $rel = Get-ContentSubpath $f.FullName
-            if (-not $rel) { continue }
-            if ($seen.ContainsKey($rel)) { continue }
-            $seen[$rel] = $true
-            $got++
-            $dst = Join-Sub $contentRoot ($rel -replace '/', [System.IO.Path]::DirectorySeparatorChar)
-            if ($f.FullName -eq $dst) { continue }   # файл уже лежит на нужном месте
-            $dstDir = Split-Path -Parent $dst
-            if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
-            Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
-        }
-        if (Test-Path -LiteralPath (Join-Sub $origDir 'e1')) {
-            Remove-Item -LiteralPath (Join-Sub $origDir 'e1') -Recurse -Force
-        }
+        $got = Copy-ExtractedFiles $origDir $seen
         Msg ('  фильтр ' + $pattern.PadRight(22) + ' -> ' + $got + ' файлов')
         $total += $got
     }
     Msg ''
     Msg ('Итого извлечено файлов: ' + $total)
+    if ($total -eq 0 -and $runFailures -gt 0) {
+        Msg ''
+        Msg ('ВНИМАНИЕ: UnrealPak ' + $runFailures + ' раз отказался запускаться при извлечении. Это не «файлы не найдены», а неработающий инструмент — см. extract_debug.txt.')
+    }
+
+    if ($total -eq 0) {
+        # --- Запасной путь: оглавление pak (-List) и извлечение по точным именам ---
+        # Причины нуля бывают разные: сломанный инструмент, изменённые имена ассетов
+        # в новой версии игры или несовпадение семантики -Filter. -List отвечает на всё.
+        Msg ''
+        Msg 'Прямые фильтры ничего не дали. Читаю оглавления pak-ов (-List)...'
+        $plainPatterns = @($script:ExtractFilters | ForEach-Object { $_.Trim('*').ToLowerInvariant() })
+        $allMatches = @{}
+        foreach ($pak in $pakFiles) {
+            $name = [System.IO.Path]::GetFileName($pak)
+            if ($name.Contains('_VO') -or $name.ToLower().Contains('vo_')) { continue }
+            $r = Invoke-ToolRun $extractExe @($pak, '-List')
+            if (-not $r.Started) {
+                [System.IO.File]::AppendAllText($dbgPath, ('--- -List :: ' + $name + ' :: ОТКАЗ ЗАПУСКА: ' + $r.StartError + "`r`n"), $Utf8NoBom)
+                $runFailures++
+                continue
+            }
+            $listPath = Join-Path $reportsDir ('pak_list_' + ($name -replace '\.pak$', '') + '.txt')
+            [System.IO.File]::WriteAllText($listPath, $r.Out, $Utf8NoBom)
+            [System.IO.File]::AppendAllText($dbgPath, ('--- -List :: ' + $name + ' :: код ' + $r.ExitCode + ' :: полная распечатка сохранена: ' + $listPath + "`r`n"), $Utf8NoBom)
+            $entries = @{}
+            foreach ($m in [regex]::Matches($r.Out, '[\w\-\./\\]+\.(?:uasset|uexp|ubulk|umap)')) {
+                $e = ($m.Value -replace '\\', '/')
+                $low = $e.ToLowerInvariant()
+                foreach ($p in $plainPatterns) {
+                    if ($low.Contains($p)) { $entries[$e] = $true; break }
+                }
+            }
+            foreach ($e in $entries.Keys) { $allMatches[$e] = $pak }
+            $totalEntries = 0
+            foreach ($m in [regex]::Matches($r.Out, '\.(?:uasset|uexp|ubulk|umap)(?![A-Za-z])')) { $totalEntries++ }
+            Msg ('  ' + $name + ': записей ассетов: ' + $totalEntries + ', подходит под наши шаблоны: ' + $entries.Count)
+        }
+        if ($allMatches.Count -gt 0) {
+            Msg ('  Извлекаю по точным именам: ' + $allMatches.Count + ' файлов...')
+            if ($allMatches.Count -gt 500) { Msg ('  (совпадений слишком много — извлеку первые 500)') }
+            if (Test-Path -LiteralPath $tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force }
+            New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+            $i = 0
+            foreach ($e in $allMatches.Keys) {
+                $i++
+                if ($i -gt 500) { break }
+                $r = Invoke-ToolRun $extractExe @($allMatches[$e], '-Extract', $tmpDir, ('-Filter=' + $e))
+                $status2 = $(if ($r.Started) { ('код ' + $r.ExitCode) } else { ('ОТКАЗ: ' + $r.StartError) })
+                [System.IO.File]::AppendAllText($dbgPath, ('--- точное имя :: ' + $e + ' :: ' + $status2 + "`r`n" + ($r.Out + $r.Err) + "`r`n"), $Utf8NoBom)
+                if (-not $r.Started) { $runFailures++ }
+            }
+            $total = Copy-ExtractedFiles $origDir @{}
+            Msg ('  Извлечено по точным именам: ' + $total + ' файлов')
+        }
+    }
+
     if ($total -eq 0) {
         Msg ''
         Msg '---- Диагностика (конец лога UnrealPak) ----'
@@ -714,8 +853,31 @@ function Invoke-Extract([hashtable]$cfg) {
         $from = [Math]::Max(0, $dbgLines.Count - 40)
         for ($k = $from; $k -lt $dbgLines.Count; $k++) { Msg ('  ' + $dbgLines[$k]) }
         Msg ('Полный лог: ' + $dbgPath)
-        Die 'Не извлечено ни одного файла. Пришлите файл extract_debug.txt (лежит рядом, в папке reports) — по нему станет ясно, в чём дело.'
+        Msg ('Оглавления paks: ' + (Join-Path $reportsDir 'pak_list_*.txt'))
+        Die 'Не извлечено ни одного файла. Пришлите extract_debug.txt и pak_list_*.txt из папки reports: по ним точно видно, запускался ли UnrealPak, читается ли pak и есть ли в вашей версии игры (1.29) нужные ассеты.'
     }
+}
+
+# Переносит извлечённое из временного e1/... в orig/Tropico6/Content/...
+function Copy-ExtractedFiles([string]$origDir, [hashtable]$seen) {
+    $contentRoot = Join-Sub $origDir 'Tropico6/Content'
+    $got = 0
+    foreach ($f in (Get-ChildItem -LiteralPath $origDir -Recurse -File -ErrorAction SilentlyContinue)) {
+        $rel = Get-ContentSubpath $f.FullName
+        if (-not $rel) { continue }
+        if ($seen.ContainsKey($rel)) { continue }
+        $seen[$rel] = $true
+        $got++
+        $dst = Join-Sub $contentRoot ($rel -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+        if ($f.FullName -eq $dst) { continue }   # файл уже лежит на нужном месте
+        $dstDir = Split-Path -Parent $dst
+        if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
+        Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
+    }
+    if (Test-Path -LiteralPath (Join-Sub $origDir 'e1')) {
+        Remove-Item -LiteralPath (Join-Sub $origDir 'e1') -Recurse -Force
+    }
+    return $got
 }
 
 # ---------------------------------------------------------------------------
@@ -1116,7 +1278,7 @@ function Invoke-Scan {
     $reportsDir = Join-Path $script:WorkDir $script:DirReports
     if (-not (Test-Path -LiteralPath $reportsDir)) { New-Item -ItemType Directory -Path $reportsDir -Force | Out-Null }
     $report = Join-Path $reportsDir 'politics_scan.txt'
-    Write-Text $report ($lines -join "`r`n")
+    Write-Text $report ((('# Отчёт scan — ' + (Get-Date).ToString('yyyy-MM-dd HH:mm') + ' — скрипт ' + $script:ScriptVersion)) + "`r`n" + ($lines -join "`r`n"))
     Msg ('Просмотрено ассетов: ' + $countFiles)
     Msg ('Числовых параметров: ' + $lines.Count)
     Msg ('Полный отчёт: ' + $report)
@@ -1124,6 +1286,7 @@ function Invoke-Scan {
 
 function Show-Status([hashtable]$cfg) {
     Msg $script:ModTitle
+    Msg ('Версия скрипта: ' + $script:ScriptVersion)
     Msg ''
     $game = Find-GameRoot $cfg
     Msg ('Игра:            ' + $(if ($game) { $game } else { 'не найдена' }))
@@ -1180,6 +1343,8 @@ function Invoke-FullInstall {
 function Show-MainMenu {
     Msg ''
     Msg ('=== ' + $script:ModTitle + ' ===')
+    Msg ('Версия скрипта: ' + $script:ScriptVersion)
+    Msg 'Если этой строки нет или версия другая — вы запустили старую копию файла!'
     Msg 'Всё в одном файле: ничего устанавливать не нужно (только Windows PowerShell).'
     while ($true) {
         Msg ''
